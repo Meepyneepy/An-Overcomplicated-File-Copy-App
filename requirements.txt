@@ -1,0 +1,2 @@
+colorama==0.4.6
+customtkinter==5.2.2

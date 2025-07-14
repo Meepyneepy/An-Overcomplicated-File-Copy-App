@@ -1,3 +1,6 @@
+###############################################
+#   A script that contains useful functions   #
+###############################################
 import re
 import math
 import time

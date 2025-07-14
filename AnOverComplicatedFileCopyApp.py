@@ -200,43 +200,6 @@ import utils
 
 customtkinter = ctk
 
-def set_file_permissions(path: str, mode="777"):
-    """
-    Sets file permissions in a cross-platform way.
-
-    Parameters:
-    - path (str): Path to the file
-    - mode (str or int) (opt): Permission bits (e.g., '644', 0o755) (DEFAULT: '777')
-
-    On Windows: Only writable flag is managed.
-    On POSIX: Full chmod behavior is supported.
-    """
-    # Convert string modes like '644' to octal int
-    if isinstance(mode, str):
-        if not mode.isdigit() or len(mode) not in (3, 4):
-            raise ValueError(f"Invalid permission mode string: '{mode}'")
-        mode = int(mode, 8)
-    elif isinstance(mode, int):
-        if mode < 0 or mode > 0o7777:
-            raise ValueError(f"Invalid permission mode integer: {mode}")
-    else:
-        raise TypeError("Mode must be a string like '755' or an integer like 0o755")
-
-    if sys.platform.startswith("win"):
-        # Only set/unset the read-only attribute
-        writable = bool(mode & 0o200)  # Owner write bit
-        current_mode = os.stat(path).st_mode
-        new_mode = current_mode | stat.S_IWRITE if writable else current_mode & ~stat.S_IWRITE
-        os.chmod(path, new_mode)
-        print(f"[Windows] Set writable={writable} for: {path}")
-    else:
-        # Full permission setting on POSIX
-        os.chmod(path, mode)
-        print(f"[POSIX] Set mode {oct(mode)} for: {path}")
-
-
-
-
 
 
 # Path to the CSV log file
@@ -248,7 +211,7 @@ ADDON_FOLDER_PATH = "AOCFCA_Addons"
 if not pathlib.Path(ADDON_FOLDER_PATH).exists():
     print(f"'{ADDON_FOLDER_PATH}' folder doesn't exist. Creating folder...")
     pathlib.Path(ADDON_FOLDER_PATH).mkdir(True, True)
-    set_file_permissions(ADDON_FOLDER_PATH)
+    utils.set_file_permissions(ADDON_FOLDER_PATH)
     print(f"Created '{ADDON_FOLDER_PATH}' folder.")
 
 
@@ -412,7 +375,7 @@ def write_config():
 
 
     with open(CONFIG_PATH, "w") as configfile:
-        set_file_permissions(CONFIG_PATH)
+        utils.set_file_permissions(CONFIG_PATH)
         config.write(configfile)
 
 def add_to_config(files=None, folders=None, destination=None):
@@ -693,13 +656,33 @@ displayName = "(BuiltIn) Add Footer"
 # 0 being the lowest means this addon will be one of the last addons applied.
 priorityLevel = 3
 
-def main_addon_function(filepath, content=None):
+# You can define custom arguments below. These are editable in the Addons Manager window.
+customArguments = {
+    "footer_text": {
+        "type": "str",
+        "default": "--- Copied by An Over Complicated File Copy App ---"
+    },
+    "append_blank_line": {
+        "type": "bool",
+        "default": True
+    }
+}
+
+# In main_addon_function(), only 'filepath', and 'content=None' are required.
+# Feel free to add defined custom args, but if they are not set up in 'customArguments' properly, they will not be called.
+def main_addon_function(filepath, content=None, footer_text=None, append_blank_line=True):
     if content is None:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
     
-    return content + "\n--- Copied by FileCopyApp ---"
-
+    if append_blank_line:
+        content += "\n\n\n"
+    
+    defaultFooter = "--- Copied by An Over Complicated File Copy App ---"
+    if footer_text == "":
+        footer_text = defaultFooter
+    content += f"{footer_text}"
+    return content
 ''',
 
     "Builtin_Addon_Lowercase_Text.py": r'''
@@ -967,11 +950,11 @@ def install_builtin_addons():
     for filename, text in builtinAddons.items():
         file_path = f"{ADDON_FOLDER_PATH}/{filename}"
         if not pathlib.Path(file_path).exists():
-            print(f"'{filename}' addon doesn't exist. Creating addon...")
+            print(f"'{filename}'{utils.Fore.YELLOW} addon doesn't exist. Creating addon...{utils.Fore.RESET}")
             with open(file_path, "w") as file:
-                set_file_permissions(file_path)
+                utils.set_file_permissions(file_path)
                 file.write(text)
-            print(f"Created '{file_path}' addon.")
+            print(f"{utils.Fore.GREEN}Created {utils.Fore.RESET}'{file_path}'{utils.Fore.GREEN} addon.{utils.Fore.RESET}")
 
 install_builtin_addons()
 
@@ -981,9 +964,13 @@ install_builtin_addons()
 
 def create_addon_file_action_template_file():
     with open(f"{ADDON_FOLDER_PATH}/File_Action_Addon_Template.py", "w") as file:
-        set_file_permissions(f"{ADDON_FOLDER_PATH}/File_Action_Addon_Template.py")
+        utils.set_file_permissions(f"{ADDON_FOLDER_PATH}/File_Action_Addon_Template.py")
         file.write(
 r"""
+# Feel free to add any needed modules.
+# Any modules not already installed will prompt the user to install them.
+# It's recommended to use the built python modules unless necessary.
+
 # Display name of addon in app.
 displayName = "File Action Addon Template"
 
@@ -1004,7 +991,8 @@ customArguments = {
     }
 }
 
-# In main_addon_function(), only 'filepath', and 'content=None' are required. Feel free to add defined custom args.
+# In main_addon_function(), only 'filepath', and 'content=None' are required.
+# Feel free to add defined custom args, but if they are not set up in 'customArguments' properly, they will not be called.
 def main_addon_function(filepath, content=None, footer_text=None, append_blank_line=True):
     if content is None:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -1014,6 +1002,7 @@ def main_addon_function(filepath, content=None, footer_text=None, append_blank_l
         content += "\n\n\n"
     content += f"--- Your Footer Text: {footer_text} ---\n--- This is an addon example template ---\n--- content will be written to file after all file actions/addons have been ran ---"
     return content
+
 
 """)
 
@@ -1049,6 +1038,7 @@ def load_available_addons():
                 args = getattr(mod, "customArguments", {})
 
                 if name in FILE_ACTIONS:
+                    print(f"{utils.Fore.YELLOW}Addon name {utils.Fore.RESET}{utils.Style.BRIGHT}'{name}'{utils.Style.RESET_ALL}{utils.Fore.YELLOW} already exists.\nAttempting to load addon as {utils.Style.RESET_ALL}{utils.Style.BRIGHT}'{file_name}'{utils.Style.RESET_ALL}{utils.Fore.YELLOW}...{utils.Fore.RESET}")
                     name = file_name
 
                 # === Create addon dict and override with config ===
@@ -1092,13 +1082,14 @@ def load_available_addons():
                 # === Register into FILE_ACTIONS ===
                 if name not in FILE_ACTIONS:
                     FILE_ACTIONS[name] = (mod.main_addon_function, priority)
+                    print(f"Loaded addon '{name}' successfully.")
                 elif file_name not in FILE_ACTIONS:
                     FILE_ACTIONS[file_name] = (mod.main_addon_function, priority)
                 else:
                     print(f"Addon name '{name}' already exists! Errored Addon: {file_name}")
 
             except Exception as e:
-                print(f"Failed to load addon '{file}': {e}")
+                print(f"{utils.Fore.RED}Failed to load addon {utils.Fore.RESET}'{file}'{utils.Fore.RED}: {e}{utils.Fore.RESET}")
 
     loadedAddons = addons
     return addons
@@ -1605,6 +1596,69 @@ class DestinationManager(ctk.CTkToplevel):
         self.destroy()
 
 
+def choose_multiple_destinations(parent=None):
+    destinations = currentConfig["Paths"].get("destination", [])
+    if not destinations:
+        messagebox.showerror("No Destinations", "No saved destination folders available.")
+        return None
+
+    class MultiDestinationChooser(ctk.CTkToplevel):
+        def __init__(self):
+            super().__init__(parent)
+            self.title("Select Destination Folders")
+            self.geometry("500x400")
+            self.result = []
+
+            ctk.CTkLabel(self, text="Select one or more destination folders:").pack(pady=(20, 10))
+
+            # Multi-select listbox
+            self.listbox = tk.Listbox(self, selectmode="extended",
+                background=uia.mainTreeviewBG,
+                foreground=uia.mainTreeviewTextColor,
+                selectbackground=uia.mainTreeviewSelectedBG,
+                highlightbackground=uia.mainTreeviewFieldBG,
+                font=uia.mainTreeviewFont,
+                height=15)
+            self.listbox.pack(fill="both", expand=True, padx=20)
+
+            for d in destinations:
+                self.listbox.insert(tk.END, d)
+
+            # Select all checkbox
+            self.select_all_var = tk.BooleanVar()
+            select_all_cb = ctk.CTkCheckBox(self, text="Select All Enabled Destinations",
+                                            variable=self.select_all_var,
+                                            command=self.toggle_select_all)
+            select_all_cb.pack(pady=(5, 0))
+
+            # Buttons
+            btn_frame = ctk.CTkFrame(self)
+            btn_frame.pack(pady=10)
+
+            confirm_btn = ctk.CTkButton(btn_frame, text="Select", command=self.confirm)
+            confirm_btn.pack(side="left", padx=5)
+
+            cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy)
+            cancel_btn.pack(side="left", padx=5)
+
+            self.grab_set()
+            self.wait_window()
+
+        def toggle_select_all(self):
+            if self.select_all_var.get():
+                self.listbox.select_set(0, tk.END)
+            else:
+                self.listbox.selection_clear(0, tk.END)
+
+        def confirm(self):
+            selected = self.listbox.curselection()
+            self.result = [self.listbox.get(i) for i in selected]
+            self.destroy()
+
+    chooser = MultiDestinationChooser()
+    return chooser.result
+
+
 
 
 class FileCopyApp(ctk.CTk):
@@ -1890,20 +1944,32 @@ class FileCopyApp(ctk.CTk):
 
 
     def copy_to_destination(self):
-        updateCurrentConfig()  # <- Force reload of config from file
+        updateCurrentConfig()
         files, folders, destination = get_saved_paths()
+        # Prompt user to select one specific destination
+        selected_dest = choose_multiple_destinations(self)
+        if not selected_dest:
+            return  # User cancelled
         if not destination:
             messagebox.showerror("Error", "Destination folder not set.")
             return
 
         file_options = currentConfig.get("FileOptions", {})
+
+        paths_to_copy = []
+        # if any(dest in mapped_dests for dest in selected_dests) or (
+        #     not mapped_dests and any(dest in all_destinations for dest in selected_dests)
+        # ):
+        #     paths_to_copy.append(path)
     
         for path in files + folders:
             try:
                 dest_override = currentConfig["Paths"].get("file_dest_map", {}).get(normalize_path(path))
                 dest_list = dest_override if dest_override and not dest_override[0] == "" else destination
-
+                
                 for actDestination in dest_list:
+                    if actDestination not in selected_dest:
+                        continue  # skip destinations this file is not assigned to
                     if not os.path.exists(actDestination):
                         os.makedirs(actDestination)
                     if os.path.isfile(path):
@@ -1955,6 +2021,8 @@ class FileCopyApp(ctk.CTk):
                 return
 
         messagebox.showinfo("Success", "All files and folders copied successfully.")
+
+
 
 
     def clear_config(self):

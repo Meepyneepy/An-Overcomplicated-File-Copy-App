@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import tkinter.filedialog as fd
 import customtkinter as ctk
@@ -7,12 +8,9 @@ from tkinter import messagebox, ttk
 import tkinter as tk
 import configparser
 import traceback
-import tempfile
 import importlib.util
 import copy
-import stat
 import sys
-import inspect
 import utils
 
 import ast
@@ -1428,6 +1426,32 @@ def OptionSelector(file_paths):
 
     OptWin()
 
+
+def shorten_path_end_truncate(path, max_pixel_width, widget):
+    """Return end-truncated path that fits inside max_pixel_width for a given widget."""
+    font = tk.Font(font=widget.cget("font"))
+    if font.measure(path) <= max_pixel_width:
+        return path  # Fits as-is
+
+    parts = path.split(os.sep)
+    shortened = parts[-1]  # start with filename
+    i = -2
+
+    while i >= -len(parts):
+        candidate = os.sep.join(["...", *parts[i:]])
+        if font.measure(candidate) <= max_pixel_width:
+            return candidate
+        i -= 1
+
+    # Fallback: show just the filename truncated
+    filename = parts[-1]
+    for j in range(len(filename)):
+        candidate = "..." + filename[j:]
+        if font.measure(candidate) <= max_pixel_width:
+            return candidate
+    return "..."  # worst case
+
+
     
 class DestinationManager(ctk.CTkToplevel):
     def __init__(self, parent, assign_to_file=None):
@@ -1871,11 +1895,12 @@ class FileCopyApp(ctk.CTk):
                     
 
                     files = [p for p in inner_self.selected_paths if os.path.isfile(p)]
+                    folders = [p for p in inner_self.selected_paths if os.path.isdir(p)]
                     
-                    if files:
+                    if files or folders:
                         
-                        OptionSelector(files)
-                        ask_file_destinations(files)
+                        OptionSelector(files + folders)
+                        ask_file_destinations(files + folders)
                     
                     
                     
@@ -1956,11 +1981,129 @@ class FileCopyApp(ctk.CTk):
 
         file_options = currentConfig.get("FileOptions", {})
 
-        paths_to_copy = []
+        def get_folder_contents(folderpath):
+            pathlist = []
+            if os.path.isdir(folderpath):
+                # print(f"jfakshdfslkjahjfdsa====== : {os.listdir(folderpath)}")
+                for path in os.listdir(folderpath):
+                    path = f"{folderpath}/{path}"
+                    # print(f"path========== {path}   type: {os.path.isdir(path)}")
+                    
+                    # try:
+                    #     print("Checking:", path)
+                    #     print("Exists:", os.path.exists(path))
+                    #     print("Is Dir:", os.path.isdir(path))
+                    # except PermissionError as e:
+                    #     print("PermissionError:", e)
+                    # except Exception as e:
+                    #     print("Other Error:", e)
+                    if not os.path.isdir(path):
+                        pathlist.append(path)
+                    else:
+                        pathlist = pathlist + get_folder_contents(path)
+            #print(f"returning: {pathlist}")
+            return pathlist
+
+
+                
+            
+
         # if any(dest in mapped_dests for dest in selected_dests) or (
         #     not mapped_dests and any(dest in all_destinations for dest in selected_dests)
         # ):
         #     paths_to_copy.append(path)
+
+        def apply_addons_to_file(path, actDestination, folder=None):
+            # print(f"Copying: {path}...")
+            error_encountered = []
+            if folder == None:
+                folder = path
+                #print("folder = path")
+            # Create a temp copy of the file to apply actions
+            includeNestedFolders = True
+            norm_path = normalize_path(folder)
+            if includeNestedFolders:
+                    
+                newfolderpath = path.replace(folder, "")
+                #print(f"NEW FOLDER PATH: {newfolderpath}")
+                newfolderpath = newfolderpath[1:]
+                #print(f"NEW FOLDER PATH: {newfolderpath}")
+                newfolderpath = re.split(r"[\\/]", newfolderpath)
+                #print(f"NEW FOLDER PATH: {newfolderpath}")
+                nestedfolderpath = actDestination
+
+                for i in range(0,len(newfolderpath)-1):
+                    #print(newfolderpath[i])
+                    nestedfolderpath = f"{nestedfolderpath}/{newfolderpath[i]}"
+                    if not os.path.exists(nestedfolderpath):
+                        
+                        os.makedirs(nestedfolderpath)
+                        # Copy permissions and timestamps from source to destination
+                        source_folder = "/".join(re.split(r"[\\/]", path)[:-1])
+                        #print(f"source_folder = {source_folder}")
+                        shutil.copystat(source_folder, nestedfolderpath)
+                        
+                        # Copy any special attributes (e.g., hidden flag on Windows)
+                        if os.name == 'nt':
+                            # Set hidden attribute on Windows
+                            import ctypes
+                            FILE_ATTRIBUTE_HIDDEN = 0x02
+                            attrs = ctypes.windll.kernel32.GetFileAttributesW(str(source_folder))
+                            if attrs & FILE_ATTRIBUTE_HIDDEN:
+                                ctypes.windll.kernel32.SetFileAttributesW(str(nestedfolderpath), FILE_ATTRIBUTE_HIDDEN)
+                        else:
+                            # On Unix, leading dot makes it hidden, already handled
+                            pass
+                #print(f"{actDestination}\\{"\\".join(newfolderpath[:-1])}")
+                actDestination = f"{actDestination}/{"/".join(newfolderpath[:-1])}"
+            if norm_path.lower() in file_options:
+                
+                #print(f"attempting copy of {path} to {actDestination}")
+                new_path = shutil.copy2(path, actDestination)
+                #print(f"coppied {path} successfully!")
+
+                filecontent = None
+
+                for i in range(5):
+                    # print(f"Running addon priority level: {5-i}")
+                    for action_name in file_options[norm_path]:
+                        try:
+                            actionFunc, actionPriority = FILE_ACTIONS[action_name]
+                            if actionPriority == 5-i: # Only run if priority is the same as i.
+                                addon_obj = next((a for a in loadedAddons if a["name"] == action_name or a["filename"] == action_name), None)
+                                if addon_obj and "argsValues" in addon_obj:
+                                    filecontent = actionFunc(new_path, filecontent, **addon_obj["argsValues"])
+                                else:
+                                    filecontent = actionFunc(new_path, filecontent)
+
+                                # print(action_name)
+                        except Exception as e:
+                            if action_name not in FILE_ACTIONS:
+                                error_encountered.append(f"FILE_ACTIONS[{action_name}] doesn't exist! ERROR: {e}")
+                            else:
+                                error_encountered.append(f"Error may have occurred with '{action_name}' while attempting to apply to '{new_path}'.\n{traceback.format_exc()}")
+                                #traceback.print_exc()
+
+
+                if filecontent is not None:
+                    with open(new_path, "w", encoding="utf-8") as f:
+                        f.write(filecontent)
+
+                #shutil.copy2(new_path, actDestination)
+                #os.remove(temp_path)
+            else:
+                try:
+                    shutil.copy2(path, actDestination)
+                except PermissionError as e:
+                    error_encountered.append(f"PermissionError: {e}")
+                except Exception as e:
+                    error_encountered.append(f"Other Error: {e}")
+
+            if error_encountered == []:
+                print(f"{utils.Fore.GREEN}Coppied: '{path}' successfully!{utils.Fore.RESET}")
+            else:
+                print(f"{utils.Fore.RED}{utils.Style.BRIGHT}Copy failed: '{path}'   :({utils.Style.NORMAL}\n{"\n".join(error_encountered)}{utils.Style.RESET_ALL}")
+                
     
         for path in files + folders:
             try:
@@ -1973,55 +2116,34 @@ class FileCopyApp(ctk.CTk):
                     if not os.path.exists(actDestination):
                         os.makedirs(actDestination)
                     if os.path.isfile(path):
-                        # Create a temp copy of the file to apply actions
-                        norm_path = normalize_path(path)
-                        if norm_path.lower() in file_options:
-                            new_path = shutil.copy2(path, actDestination)
-
-                            filecontent = None
-
-                            for i in range(5):
-                                # print(f"Running addon priority level: {5-i}")
-                                for action_name in file_options[norm_path]:
-                                    try:
-                                        actionFunc, actionPriority = FILE_ACTIONS[action_name]
-                                        if actionPriority == 5-i: # Only run if priority is the same as i.
-                                            addon_obj = next((a for a in loadedAddons if a["name"] == action_name or a["filename"] == action_name), None)
-                                            if addon_obj and "argsValues" in addon_obj:
-                                                filecontent = actionFunc(new_path, filecontent, **addon_obj["argsValues"])
-                                            else:
-                                                filecontent = actionFunc(new_path, filecontent)
-
-                                            # print(action_name)
-                                    except Exception as e:
-                                        if action_name not in FILE_ACTIONS:
-                                            print(f"FILE_ACTIONS[{action_name}] doesn't exist! ERROR: {e}")
-                                        else:
-                                            print(f"Error may have occurred with '{action_name}' while attempting to apply to '{new_path}'.")
-                                            traceback.print_exc()
-
-
-                            if filecontent is not None:
-                                with open(new_path, "w", encoding="utf-8") as f:
-                                    f.write(filecontent)
-
-                            #shutil.copy2(new_path, actDestination)
-                            #os.remove(temp_path)
-                        else:
-                            shutil.copy2(path, actDestination)
-
-                    elif os.path.isdir(path):
-                        folder_name = os.path.basename(os.path.normpath(path))
-                        dest_path = os.path.join(actDestination, folder_name)
-                        if os.path.exists(dest_path):
-                            shutil.rmtree(dest_path)
-                        shutil.copytree(path, dest_path)
+                        #print(f"FILE PATH=================== {path}")
+                        apply_addons_to_file(path, actDestination)
+                    elif os.path.isdir(path) and path in folders:
+                        #print(f"folder contents: {get_folder_contents(path)}")
+                        #sys.exit()
+                        for subpaths in get_folder_contents(path):
+                            #print(f"SUBPATH = {subpaths}")
+                            # try:
+                            #     print("Checking:", subpaths)
+                            #     print("Exists:", os.path.exists(subpaths))
+                            #     print("Is Dir:", os.path.isdir(subpaths))
+                            #     if os.path.isdir(subpaths):
+                            #         print(f"Folder: {path}")
+                            # except PermissionError as e:
+                            #     print("PermissionError:", e)
+                            # except Exception as e:
+                            #     print("Other Error:", e)
+                            apply_addons_to_file(subpaths, actDestination, path)
+                        # folder_name = os.path.basename(os.path.normpath(path))
+                        # dest_path = os.path.join(actDestination, folder_name)
+                        # if os.path.exists(dest_path):
+                        #     shutil.rmtree(dest_path)
+                        # shutil.copytree(path, dest_path)
             except Exception as e:
                 messagebox.showerror("Copy Error", f"Failed to copy {path}:\n{e}")
                 return
 
         messagebox.showinfo("Success", "All files and folders copied successfully.")
-
 
 
 
@@ -2075,7 +2197,8 @@ class FileCopyApp(ctk.CTk):
 
                 inner_self.tree.pack(fill="both", expand=True, padx=10, pady=10)
                 
-
+                
+                
                 style = ttk.Style(inner_self)
                 style.theme_use('clam')
 
@@ -2103,11 +2226,12 @@ class FileCopyApp(ctk.CTk):
                         ("active", uia.mainTreeviewHeadingActiveBG),  # hover color
                     ]
                 )
+
                 
                 def create_rows(inner_self):
                     for row in inner_self.rows:
                         type_, path = row
-                        if type_ == "file":
+                        if type_ in ("file","folder"):
                             actions = ",".join(currentConfig.get("FileOptions", {}).get(path.lower(), []))
                         else:
                             actions = ""
@@ -2138,6 +2262,12 @@ class FileCopyApp(ctk.CTk):
                                 tags = ("no_dest",)
 
                         inner_self.tree.insert("", "end", values=(type_, path, actions, dest_display), tags=tags)
+                        # last_item_id = inner_self.tree.get_children()[-1]  # This gets the item ID
+                        # #path = inner_self.tree.item(last_item_id)  # Or whatever data you want to show in tooltip
+
+                        # # Attach tooltip to the Treeview widget itself
+                        # CTkTooltip(inner_self.tree.item(last_item_id.widget), path)
+                        
 
                 create_rows(inner_self)
 
@@ -2192,6 +2322,9 @@ class FileCopyApp(ctk.CTk):
                             continue
                         type_, path = values[0], values[1]
                         if type_ == "file":
+                            selected_files.append(path)
+
+                        if type_ == "folder":
                             selected_files.append(path)
 
                     if not selected_files:
@@ -2273,7 +2406,7 @@ class FileCopyApp(ctk.CTk):
                                 # Update Treeview column
                                 for child in inner_self.tree.get_children():
                                     values = inner_self.tree.item(child)["values"]
-                                    if values[0] == "file" and normalize_path(values[1]) == norm_path:
+                                    if values[0] in ("file", "folder") and normalize_path(values[1]) == norm_path:
                                         inner_self.tree.set(child, "actions", ",".join(selected))
                                         break
 
@@ -2368,7 +2501,7 @@ class FileCopyApp(ctk.CTk):
                         if len(values) < 2:
                             continue
                         type_, path = values[0], values[1]
-                        if type_ != "file":
+                        if type_ not in ("file", "folder"):
                             continue
                         selected_files.append(path)
 

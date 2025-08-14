@@ -17,12 +17,55 @@ def sleep(duration=1.0):
     time.sleep(duration)
     return
 
+
+def multithread_func(self, lambdaFunc, daemon=True, wait=False, lambdaCallback=None):
+    """
+    Run a lambda or function in a background thread.
+    
+    Args:
+        lambdaFunc: function or lambda to execute (must be callable, e.g. lambda: myfunc(args))
+        daemon: if True, thread exits with program
+        wait: if True, wait for thread to finish and return result
+        lambdaCallback: optional function to call with result (executed in the same thread!)
+
+    Returns:
+        If wait=True, returns result. If wait=False, returns thread.
+    """
+    import threading
+
+    result = {}
+    done = threading.Event()
+
+    def thread_func():
+        try:
+            result['value'] = lambdaFunc()
+        except Exception as e:
+            result['error'] = e
+        finally:
+            done.set()
+            if lambdaCallback:
+                if get_required_arg_count(lambdaCallback) >= 1:
+                    lambdaCallback(result.get('value', None))
+                else:
+                    lambdaCallback()
+
+    t = threading.Thread(target=thread_func, daemon=daemon)
+    t.start()
+
+    if wait:
+        t.join()
+        if 'error' in result:
+            raise result['error']
+        return result.get('value', None)
+    else:
+        return t
+
 def Fore_RGB(rgb, g=None, b=None):
     """Console text foreground RGB. (May not be supported on all platforms.)"""
     if isinstance(rgb, (list,tuple)) and not isinstance(rgb, int) and len(rgb) == 3:
         r,g,b = rgb
-
     return f"\033[38;2;{r};{g};{b}m"
+
 def Back_RGB(rgb, g=None, b=None):
     """Console text background RGB. (May not be supported on all platforms.)"""
     if isinstance(rgb, (list,tuple)) and not isinstance(rgb, int) and len(rgb) == 3:

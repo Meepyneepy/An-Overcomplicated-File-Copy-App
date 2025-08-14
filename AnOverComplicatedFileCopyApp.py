@@ -4,6 +4,7 @@ import shutil
 import tkinter.filedialog as fd
 import customtkinter as ctk
 import pathlib
+import time
 from tkinter import messagebox, ttk
 import tkinter as tk
 import configparser
@@ -234,29 +235,28 @@ currentConfig = {}
 
 
 def read_config():
+    """Enhanced config reader that supports per-file addon configurations"""
     config = configparser.ConfigParser()
     config.read(CONFIG_PATH)
 
-    returnConfig = {"Paths": {}, "FileOptions": {}, "Addons": {}}
+    returnConfig = {"Paths": {}, "FileOptions": {}, "Addons": {}, "PerFileAddonConfigs": {}}
 
     returnConfig["Paths"]["files"] = config.get("Paths", "files", fallback="").split("|") if config.has_option("Paths", "files") else []
     returnConfig["Paths"]["folders"] = config.get("Paths", "folders", fallback="").split("|") if config.has_option("Paths", "folders") else []
     returnConfig["Paths"]["destination"] = config.get("Paths", "destination", fallback="").split("|") if config.has_option("Paths", "destination") else []
 
+    # Existing FileOptions parsing
     if config.has_section("FileOptions"):
         for k in config["FileOptions"]:
-            
             tempFileOptName = k.split("_!_", 1)
             if len(tempFileOptName) > 1:
                 path = f"{tempFileOptName[0]}:{tempFileOptName[1]}"
             else:
                 path = tempFileOptName[0]
-
             path = normalize_path(path)
             returnConfig["FileOptions"][path] = config["FileOptions"][k].split(",")
 
-
-    # Read Addon Settings
+    # Existing Addon settings parsing
     if config.has_section("Addons"):
         addon_configs = {}
         for k, v in config["Addons"].items():
@@ -265,11 +265,7 @@ def read_config():
                 k = f"{tempFileOptName[0]}:{tempFileOptName[1]}"
             else:
                 k = tempFileOptName[0]
-
             k = normalize_path(k)
-
-            print(f"read addon path {k}")
-
 
             parts = v.split("|")
             if len(parts) >= 2:
@@ -288,7 +284,53 @@ def read_config():
                 }
         returnConfig["Addons"] = addon_configs
 
-    # Per-file destination mapping
+    # FIXED: Per-file addon configurations
+    if config.has_section("PerFileAddonConfigs"):
+        per_file_configs = {}
+        for k, v in config["PerFileAddonConfigs"].items():
+            # Parse the key: it's in format "file_path#addon_name"
+            
+            if "#___#" in k:
+                file_key, unique_id = k.split("#___#", 1)
+            else:
+                file_key = k
+            # Try to extract addon_name from value
+            if "|^*|" in v:
+                addon_name = v.split("|^*|", 1)[0]
+            else:
+                continue  # Skip malformed entries
+            
+            # Parse file path (with drive handling)
+            tempFileOptName = file_key.split("_!_", 1)
+            if len(tempFileOptName) > 1:
+                file_path = f"{tempFileOptName[0]}:{tempFileOptName[1]}"
+            else:
+                file_path = tempFileOptName[0]
+            file_path = normalize_path(file_path)
+            
+            # Parse the value: addon_name|arg1=val1,arg2=val2
+            if "|^*|" in v:
+                stored_addon_name, args_string = v.split("|^*|", 1)
+                # Use addon_name from key, but verify it matches the stored one
+                if addon_name != stored_addon_name:
+                    print(f"Warning: Addon name mismatch in key '{k}': key has '{addon_name}', value has '{stored_addon_name}'")
+                
+                args_dict = {}
+                if args_string:
+                    for arg_pair in args_string.split(","):
+                        if "=" in arg_pair:
+                            key_name, val = arg_pair.split("=", 1)
+                            val = True if str(val) == "True" else val
+                            val = False if str(val) == "False" else val
+                            args_dict[key_name] = val 
+                
+                if file_path not in per_file_configs:
+                    per_file_configs[file_path] = {}
+                per_file_configs[file_path][addon_name] = args_dict
+        
+        returnConfig["PerFileAddonConfigs"] = per_file_configs
+
+    # Per-file destination mapping (existing)
     if config.has_section("FileDestinationMap"):
         destinations = {}
         for k, v in config["FileDestinationMap"].items():
@@ -297,11 +339,8 @@ def read_config():
                 k = f"{tempFileOptName[0]}:{tempFileOptName[1]}"
             else:
                 k = tempFileOptName[0]
-
             k = normalize_path(k)
-
             destinations[normalize_path(k)] = v.split("|")
-
         returnConfig["Paths"]["file_dest_map"] = destinations
     else:
         returnConfig["Paths"]["file_dest_map"] = {}
@@ -321,18 +360,25 @@ print(utils.pretty_print_nested(currentConfig))
 
 
 def write_config():
+    """Enhanced config writer that supports per-file addon configurations"""
     config = configparser.ConfigParser()
     config["Paths"] = {}
     config["Addons"] = {}
     config["Paths"]["files"] = "|".join(currentConfig["Paths"].get("files", []))
     config["Paths"]["folders"] = "|".join(currentConfig["Paths"].get("folders", []))
     config["Paths"]["destination"] = "|".join(currentConfig["Paths"].get("destination", []))
+    currrentTime = time.time()
+    currentUniqueID = 0
+    def gen_unique_id():
+        nonlocal currentUniqueID
+        currentUniqueID += 1
+        return f"{currrentTime}_{currentUniqueID}"
 
+    # Existing FileOptions
     if currentConfig.get("FileOptions"):
         tempFileOptions = {}
         for k, v in currentConfig["FileOptions"].items():
             norm_k = normalize_path(k)
-            print(norm_k)
             drive, tail = os.path.splitdrive(norm_k)
             key = f"{drive[:-1]}_!_{tail}" if drive else norm_k
             tempFileOptions[key] = ",".join(v)
@@ -340,28 +386,23 @@ def write_config():
             k: v for k, v in tempFileOptions.items()
         }
     
+    # File destination mapping
     if currentConfig["Paths"].get("file_dest_map"):
         tempDestinationPaths = {}
         for k, v in currentConfig["Paths"]["file_dest_map"].items():
             norm_k = normalize_path(k)
-            print(norm_k)
             drive, tail = os.path.splitdrive(norm_k)
             key = f"{drive[:-1]}_!_{tail}" if drive else norm_k
             tempDestinationPaths[key] = "|".join(v if isinstance(v, list) else [v])
-
         config["FileDestinationMap"] = {
             k: v for k, v in tempDestinationPaths.items()
         }
 
-    # Save Addon Configs
-    
+    # Existing addon configs
     for addon in loadedAddons:
         path = normalize_path(addon["path"])
-
         drive, tail = os.path.splitdrive(path)
         key = f"{drive[:-1]}_!_{tail}" if drive else path
-        #key = normalize_path(key)
-
         config["Addons"][key] = "|".join([
             "1" if addon.get("enabled", True) else "0",
             str(addon.get("priority", 3)),
@@ -371,6 +412,19 @@ def write_config():
             )
         ])
 
+    # NEW: Per-file addon configurations
+    if currentConfig.get("PerFileAddonConfigs"):
+        config["PerFileAddonConfigs"] = {}
+        for file_path, addon_configs in currentConfig["PerFileAddonConfigs"].items():
+            norm_path = normalize_path(file_path)
+            drive, tail = os.path.splitdrive(norm_path)
+            config_key = f"{drive[:-1]}_!_{tail}" if drive else norm_path
+            
+            for addon_name, args_dict in addon_configs.items():
+                # Create a unique key for each file-addon combination
+                full_key = f"{config_key}#___#{gen_unique_id()}"
+                args_string = ",".join(f"{k}={v}" for k, v in args_dict.items())
+                config["PerFileAddonConfigs"][full_key] = f"{addon_name}|^*|{args_string}"
 
     with open(CONFIG_PATH, "w") as configfile:
         utils.set_file_permissions(CONFIG_PATH)
@@ -939,7 +993,151 @@ def main_addon_function(filepath, content=None, encoding="utf-8", print_output_i
     return content
 
 
-'''
+''',
+
+"Builtin_Addon_PIL_Image_Processor.py": r'''
+from io import BytesIO
+#import pillow
+
+# Display name of addon in app.
+displayName = "(BuiltIn) PIL: Image Processor"
+
+# Priority level for addon. Run fairly early so text-based addons can still run after if desired.
+priorityLevel = 3
+
+# Requires Pillow. The manager will show it as "missing" if not installed and offer to install.
+#   pip install Pillow
+
+# Configurable parameters
+customArguments = {
+    "resize_width":  {"type": "int",  "default": "0"},   # 0 = no resize on width
+    "resize_height": {"type": "int",  "default": "0"},   # 0 = no resize on height
+    "keep_aspect_ratio": {"type": "bool", "default": True},
+    "convert_mode":  {"type": "str",  "default": "KEEP"},  # e.g. "RGB", "L" (grayscale), "RGBA", or "KEEP"
+    "rotate_degrees": {"type": "int", "default": "0"},     # Clockwise degrees
+    "flip_horizontal": {"type": "bool", "default": False},
+    "flip_vertical": {"type": "bool", "default": False},
+    "invert_colors": {"type": "bool", "default": False},   # NEW OPTION
+    "format_override": {"type": "str", "default": ""},     # "", "PNG", "JPEG", "WEBP", etc.
+    "quality": {"type": "int", "default": "90"},
+    "optimize": {"type": "bool", "default": True},
+}
+
+def main_addon_function(
+    filepath,
+    content=None,
+    resize_width=0,
+    resize_height=0,
+    keep_aspect_ratio=True,
+    convert_mode="KEEP",
+    rotate_degrees=0,
+    flip_horizontal=False,
+    flip_vertical=False,
+    invert_colors=False,
+    format_override="",
+    quality=90,
+    optimize=True
+):
+    """
+    If `content` is provided and is bytes from a previous addon, process that.
+    Otherwise read the file at `filepath`.
+
+    Returns: bytes of the processed image (so downstream addons can keep chaining).
+    """
+
+    from PIL import Image, ImageOps  # Pillow
+    import os
+
+    # Open image from bytes or file
+    if isinstance(content, (bytes, bytearray, memoryview)):
+        bio = BytesIO(content)
+        img = Image.open(bio)
+    else:
+        img = Image.open(filepath)
+
+    img.load()  # ensure data is loaded before any ops
+
+    # Rotate/flip first (cheap integer ops)
+    if rotate_degrees:
+        img = img.rotate(-int(rotate_degrees), expand=True)
+
+    if flip_horizontal:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+    if flip_vertical:
+        img = img.transpose(Image.FLIP_TOP_BOTTOM)
+
+    # Resize if requested
+    rw = int(resize_width) if str(resize_width).strip() != "" else 0
+    rh = int(resize_height) if str(resize_height).strip() != "" else 0
+
+    if rw > 0 or rh > 0:
+        if keep_aspect_ratio:
+            w0, h0 = img.size
+            if rw > 0 and rh > 0:
+                scale = min(rw / w0, rh / h0)
+                target = (max(1, int(w0 * scale)), max(1, int(h0 * scale)))
+            elif rw > 0:
+                scale = rw / w0
+                target = (rw, max(1, int(h0 * scale)))
+            else:
+                scale = rh / h0
+                target = (max(1, int(w0 * scale)), rh)
+        else:
+            target = (w0 if rw <= 0 else rw, h0 if rh <= 0 else rh)
+
+        img = img.resize(target, Image.LANCZOS)
+
+    # Mode conversion
+    convert_mode = str(convert_mode).upper().strip()
+    if convert_mode and convert_mode != "KEEP":
+        img = img.convert(convert_mode)
+
+    # Invert colors if requested
+    if invert_colors:
+        # Pillow's invert requires "L" or "RGB" type; handle alpha separately
+        if img.mode == "RGBA":
+            r, g, b, a = img.split()
+            rgb_image = Image.merge("RGB", (r, g, b))
+            inverted_image = ImageOps.invert(rgb_image)
+            r2, g2, b2 = inverted_image.split()
+            img = Image.merge("RGBA", (r2, g2, b2, a))
+        elif img.mode == "LA":
+            l, a = img.split()
+            inverted_l = ImageOps.invert(l)
+            img = Image.merge("LA", (inverted_l, a))
+        else:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img = ImageOps.invert(img)
+
+    # Decide format
+    fmt = (format_override or img.format or "").upper().strip()
+    if not fmt:
+        ext = os.path.splitext(filepath)[1].lower()
+        ext_to_fmt = {
+            ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
+            ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".gif": "GIF"
+        }
+        fmt = ext_to_fmt.get(ext, "PNG")
+
+    # Serialize to bytes
+    out = BytesIO()
+    save_kwargs = {}
+    if fmt in ("JPEG", "WEBP", "TIFF"):
+        try:
+            save_kwargs["quality"] = int(quality)
+        except Exception:
+            save_kwargs["quality"] = 90
+        save_kwargs["optimize"] = bool(optimize)
+
+    if fmt == "JPEG":
+        save_kwargs.setdefault("progressive", True)
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            img = img.convert("RGB")
+
+    img.save(out, format=fmt, **save_kwargs)
+    return out.getvalue()''',
+
 
 
 }
@@ -1153,6 +1351,360 @@ load_available_addons()
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
+# === NEW: helper to persist addon output of many types (text/bytes/PIL Image) ===
+def _save_processed_content_to_path(output_obj, out_path, original_src_path=None):
+    """
+    Persist processed content to `out_path` supporting:
+      - str (text)
+      - bytes (binary)
+      - PIL.Image.Image (image object)
+    """
+    # Lazy import to avoid hard dependency if user never uses image addons
+    try:
+        from PIL import Image as _PIL_Image  # type: ignore
+    except Exception:
+        _PIL_Image = None
+
+    # str -> text
+    if isinstance(output_obj, str):
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(output_obj)
+        return
+
+    # bytes -> binary
+    if isinstance(output_obj, (bytes, bytearray, memoryview)):
+        with open(out_path, "wb") as f:
+            f.write(output_obj)
+        return
+
+    # PIL Image -> save using existing/ext-inferred format (no-op if PIL absent)
+    if _PIL_Image is not None:
+        try:
+            if isinstance(output_obj, _PIL_Image.Image):
+                # Infer format: prefer image.format, otherwise from destination extension, otherwise original
+                fmt = output_obj.format
+                if not fmt:
+                    # Try to infer from out_path extension
+                    ext = os.path.splitext(out_path)[1].lower()
+                    ext_to_fmt = {
+                        ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
+                        ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".gif": "GIF"
+                    }
+                    fmt = ext_to_fmt.get(ext)
+                    # Fallback: try original source extension
+                    if not fmt and original_src_path:
+                        oext = os.path.splitext(original_src_path)[1].lower()
+                        fmt = ext_to_fmt.get(oext, "PNG")
+                output_obj.save(out_path, format=fmt)
+                return
+        except Exception:
+            # If saving as PIL image fails for any reason, best-effort: do nothing here so caller can handle/log
+            pass
+
+    # If we got here, we don't know how to save this; raise so caller can show a meaningful error.
+    raise TypeError(f"Unsupported addon return type: {type(output_obj)}")
+
+
+
+class PerFileAddonConfigurator(ctk.CTkToplevel):
+    """Dialog for configuring addon settings for specific files"""
+    def __init__(self, parent, file_paths):
+        super().__init__(parent)
+        self.title("Configure Per-File Addon Settings")
+        self.geometry("700x600")
+        self.file_paths = file_paths
+        self.per_file_configs = {}
+        
+        # Initialize with existing configs
+        for file_path in file_paths:
+            norm_path = normalize_path(file_path)
+            self.per_file_configs[norm_path] = currentConfig.get("PerFileAddonConfigs", {}).get(norm_path, {}).copy()
+
+        self.create_widgets()
+        self.after(100, lambda: self.focus_force())
+        self.grab_set()
+        self.wait_window()
+
+    def create_widgets(self):
+        # File selector
+        file_frame = ctk.CTkFrame(self)
+        file_frame.pack(fill="x", padx=10, pady=(10, 5))
+        
+        ctk.CTkLabel(file_frame, text="Select File:").pack(side="left", padx=(10, 5))
+        
+        self.file_var = tk.StringVar(value=self.file_paths[0] if self.file_paths else "")
+        self.file_combo = ctk.CTkComboBox(
+            file_frame, 
+            values=[os.path.basename(f) for f in self.file_paths],
+            variable=self.file_var,
+            command=self.on_file_changed,
+            width=300
+        )
+        self.file_combo.pack(side="left", padx=5)
+
+        # Addon selector
+        addon_frame = ctk.CTkFrame(self)
+        addon_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(addon_frame, text="Select Addon:").pack(side="left", padx=(10, 5))
+        
+        self.addon_var = tk.StringVar()
+        addon_names = list(FILE_ACTIONS.keys())
+        self.addon_combo = ctk.CTkComboBox(
+            addon_frame,
+            values=addon_names,
+            variable=self.addon_var,
+            command=self.on_addon_changed,
+            width=300
+        )
+        self.addon_combo.pack(side="left", padx=5)
+
+        add_config_btn = ctk.CTkButton(
+            addon_frame,
+            text="Add/Edit Config",
+            command=self.add_edit_config,
+            width=100
+        )
+        add_config_btn.pack(side="left", padx=5)
+
+        # Configuration display
+        config_frame = ctk.CTkFrame(self)
+        config_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        ctk.CTkLabel(config_frame, text="Current Configurations:").pack(anchor="w", padx=10, pady=(10, 5))
+        
+        self.config_listbox = tk.Listbox(
+            config_frame,
+            background=uia.mainTreeviewBG,
+            foreground=uia.mainTreeviewTextColor,
+            selectbackground=uia.mainTreeviewSelectedBG,
+            font=uia.mainTreeviewFont
+        )
+        self.config_listbox.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        # Control buttons
+        btn_frame = ctk.CTkFrame(config_frame)
+        btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        edit_btn = ctk.CTkButton(btn_frame, text="Edit Selected", command=self.edit_selected_config)
+        edit_btn.pack(side="left", padx=(0, 5))
+        
+        remove_btn = ctk.CTkButton(btn_frame, text="Remove Selected", command=self.remove_selected_config)
+        remove_btn.pack(side="left", padx=5)
+
+        # Bottom buttons
+        bottom_frame = ctk.CTkFrame(self)
+        bottom_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        save_btn = ctk.CTkButton(bottom_frame, text="Save", command=self.save_configs)
+        save_btn.pack(side="right", padx=5)
+        
+        cancel_btn = ctk.CTkButton(bottom_frame, text="Cancel", command=self.destroy)
+        cancel_btn.pack(side="right", padx=(0, 5))
+
+        # Initialize display
+        self.refresh_config_display()
+
+    def on_file_changed(self, selected_basename):
+        # Find the full path from basename
+        for path in self.file_paths:
+            if os.path.basename(path) == selected_basename:
+                self.file_var.set(path)
+                break
+        self.refresh_config_display()
+
+    def on_addon_changed(self, selected_addon):
+        pass  # Could add preview of default settings here
+
+    def add_edit_config(self):
+        current_file = self.file_var.get()
+        current_addon = self.addon_var.get()
+        
+        if not current_file or not current_addon:
+            messagebox.showwarning("Selection Required", "Please select both a file and an addon.")
+            return
+
+        # Find the addon object to get its parameters
+        addon_obj = next((a for a in loadedAddons if a["name"] == current_addon or a["filename"] == current_addon), None)
+        if not addon_obj or not addon_obj.get("args"):
+            messagebox.showinfo("No Parameters", f"The addon '{current_addon}' has no configurable parameters.")
+            return
+
+        norm_path = normalize_path(current_file)
+        existing_config = self.per_file_configs.get(norm_path, {}).get(current_addon, {})
+
+        self.edit_addon_parameters(addon_obj, existing_config, norm_path, current_addon)
+
+    def edit_addon_parameters(self, addon_obj, existing_config, file_path, addon_name):
+        class ParamEditor(ctk.CTkToplevel):
+            def __init__(self):
+                super().__init__()
+                self.title(f"Configure {addon_name} for {os.path.basename(file_path)}")
+                self.geometry("500x400")
+                self.vars = {}
+
+                # Create parameter controls
+                scroll_frame = ctk.CTkScrollableFrame(self, width=460, height=300)
+                scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+                for param_name, param_meta in addon_obj["args"].items():
+                    param_type = param_meta.get("type", "str")
+                    default_value = param_meta.get("default", "")
+                    current_value = existing_config.get(param_name, default_value)
+
+                    frame = ctk.CTkFrame(scroll_frame)
+                    frame.pack(fill="x", pady=5, padx=5)
+
+                    ctk.CTkLabel(frame, text=f"{param_name}:").pack(anchor="w", padx=5)
+
+                    if param_type == "bool":
+                        var = tk.BooleanVar(value=bool(current_value) if isinstance(current_value, bool) else str(current_value).lower() in ['true', '1', 'yes'])
+                        cb = ctk.CTkCheckBox(frame, text="", variable=var)
+                        cb.pack(anchor="w", padx=20)
+                    elif param_type == "int":
+                        var = tk.StringVar(value=str(current_value))
+                        entry = ctk.CTkEntry(frame, textvariable=var, placeholder_text="Enter integer")
+                        entry.pack(fill="x", padx=20)
+                    else:  # str
+                        var = tk.StringVar(value=str(current_value))
+                        entry = ctk.CTkEntry(frame, textvariable=var, placeholder_text="Enter text")
+                        entry.pack(fill="x", padx=20)
+
+                    self.vars[param_name] = (var, param_type)
+
+                # Buttons
+                btn_frame = ctk.CTkFrame(self)
+                btn_frame.pack(fill="x", padx=10, pady=10)
+
+                save_btn = ctk.CTkButton(btn_frame, text="Save", command=self.save_params)
+                save_btn.pack(side="right", padx=5)
+
+                cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy)
+                cancel_btn.pack(side="right", padx=(0, 5))
+
+                self.after(100, lambda: self.focus_force())
+                self.grab_set()
+                self.wait_window()
+
+            def save_params(self):
+                new_config = {}
+                for param_name, (var, param_type) in self.vars.items():
+                    value = var.get()
+                    
+                    # Type conversion
+                    if param_type == "int":
+                        try:
+                            value = int(value)
+                        except ValueError:
+                            messagebox.showerror("Invalid Input", f"'{param_name}' must be an integer.")
+                            return
+                    elif param_type == "bool":
+                        value = bool(value)
+                    # str values remain as-is
+                    
+                    new_config[param_name] = value
+
+                # Update the main configurator's data
+                if file_path not in outer_self.per_file_configs:
+                    outer_self.per_file_configs[file_path] = {}
+                outer_self.per_file_configs[file_path][addon_name] = new_config
+                
+                outer_self.refresh_config_display()
+                self.destroy()
+
+        outer_self = self
+        ParamEditor()
+
+    def edit_selected_config(self):
+        selection = self.config_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a configuration to edit.")
+            return
+
+        selected_text = self.config_listbox.get(selection[0])
+        # Parse the format: "addon_name: param1=val1, param2=val2"
+        if ":" not in selected_text:
+            return
+
+        addon_name = selected_text.split(":")[0].strip()
+        print(loadedAddons)
+        for i in range(1, len(selected_text.split(":")) + 1):
+            candidate_key = ":".join(selected_text.split(":")[:i]).strip()
+            print(candidate_key)
+            print(f"test funct: {candidate_key in loadedAddons}")
+            if any(d["name"] == candidate_key for d in loadedAddons):
+                addon_name = candidate_key
+                break
+        current_file = self.file_var.get()
+        
+        # Find addon object and edit
+        addon_obj = next((a for a in loadedAddons if a["name"] == addon_name or a["filename"] == addon_name), None)
+        if addon_obj:
+            norm_path = normalize_path(current_file)
+            existing_config = self.per_file_configs.get(norm_path, {}).get(addon_name, {})
+            self.edit_addon_parameters(addon_obj, existing_config, norm_path, addon_name)
+
+    def remove_selected_config(self):
+        selection = self.config_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a configuration to remove.")
+            return
+
+        selected_text = self.config_listbox.get(selection[0])
+        addon_name = selected_text.split(":")[0].strip()
+        for i in range(1, len(selected_text.split(":")) + 1):
+            candidate_key = ":".join(selected_text.split(":")[:i]).strip()
+            print(candidate_key)
+            print(f"test funct: {candidate_key in loadedAddons}")
+            if any(d["name"] == candidate_key for d in loadedAddons):
+                addon_name = candidate_key
+                break
+        current_file = self.file_var.get()
+        norm_path = normalize_path(current_file)
+
+        print(self.per_file_configs[norm_path][addon_name])
+
+        if norm_path in self.per_file_configs and addon_name in self.per_file_configs[norm_path]:
+            del self.per_file_configs[norm_path][addon_name]
+            if not self.per_file_configs[norm_path]:
+                del self.per_file_configs[norm_path]
+            self.refresh_config_display()
+
+    def refresh_config_display(self):
+        self.config_listbox.delete(0, tk.END)
+        current_file = self.file_var.get()
+        if not current_file:
+            return
+
+        norm_path = normalize_path(current_file)
+        configs = self.per_file_configs.get(norm_path, {})
+
+        for addon_name, params in configs.items():
+            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+            display_text = f"{addon_name}: {param_str}"
+            self.config_listbox.insert(tk.END, display_text)
+
+    def save_configs(self):
+        # Update global config
+        if "PerFileAddonConfigs" not in currentConfig:
+            currentConfig["PerFileAddonConfigs"] = {}
+
+        print(self.per_file_configs.items())
+        
+        for file_path, configs in self.per_file_configs.items():
+            print(f"file_path = {file_path}, configs = {configs}")
+            if configs:  # Only save non-empty configs
+                currentConfig["PerFileAddonConfigs"][file_path] = configs
+                print("is configs")
+            elif file_path in currentConfig["PerFileAddonConfigs"]:
+                # Remove empty configs
+                print("no configs")
+                del currentConfig["PerFileAddonConfigs"][file_path]
+        if not self.per_file_configs.items():
+            del currentConfig["PerFileAddonConfigs"][normalize_path(self.file_var.get())]
+
+        write_config()
+        self.destroy()
 
 
 class CTkTooltip:
@@ -1199,6 +1751,71 @@ class CTkTooltip:
         if self.tooltip_window:
             self.tooltip_window.destroy()
             self.tooltip_window = None
+
+# def show_tooltip(self, widget=None, x=None, y=None):
+#     if self.tooltip_window or not self.text:
+#         return
+
+#     widget = widget or self.widget
+#     offset_x = 20
+#     offset_y = 10
+
+#     # Create the tooltip window off-screen first
+#     self.tooltip_window = customtkinter.CTkToplevel(widget)
+#     self.tooltip_window.overrideredirect(True)
+#     self.tooltip_window.geometry("+10000+10000")  # hidden temporarily
+
+#     # Create border frame and label
+#     border_frame = customtkinter.CTkFrame(
+#         master=self.tooltip_window,
+#         fg_color=uia.mainTooltipBorderColor,
+#         corner_radius=4,
+#         border_color=uia.mainTooltipBorderColor,
+#         border_width=uia.mainTooltipBorderWidth
+#     )
+
+#     label = customtkinter.CTkLabel(
+#         master=border_frame,
+#         text=self.text,
+#         fg_color=uia.mainTooltipBG,
+#         text_color=uia.mainTooltipTextColor,
+#         corner_radius=4,
+#         padx=5,
+#         pady=3
+#     )
+
+#     label.pack(padx=1, pady=1)
+#     border_frame.pack()
+
+#     # Update layout to get real width and height
+#     self.tooltip_window.update_idletasks()
+#     real_width = self.tooltip_window.winfo_width()
+#     real_height = self.tooltip_window.winfo_height()
+
+#     # Screen dimensions
+#     screen_width = widget.winfo_screenwidth()
+#     screen_height = widget.winfo_screenheight()
+
+#     # Default position: right and below mouse
+#     new_x = x + offset_x
+#     new_y = y + offset_y
+
+#     # Flip horizontally if it would overflow right
+#     if new_x + real_width > screen_width:
+#         new_x = x - real_width - offset_x
+
+#     # Flip vertically if it would overflow bottom
+#     if new_y + real_height > screen_height:
+#         new_y = y - real_height - offset_y
+
+#     # Clamp inside screen boundaries
+#     new_x = max(0, min(new_x, screen_width - real_width))
+#     new_y = max(0, min(new_y, screen_height - real_height))
+
+#     # Apply final position
+#     self.tooltip_window.geometry(f"+{new_x}+{new_y}")
+
+
 
 
 
@@ -1357,14 +1974,13 @@ def OptionSelector(file_paths):
         def __init__(self):
             super().__init__()
             self.title("File Options")
-            self.geometry("520x640")
+            self.geometry("580x680")  # Slightly wider
             self.option_vars = {}
             self.global_option_vars = {opt: tk.BooleanVar() for opt in FILE_ACTIONS}
 
             self.grid_rowconfigure(0, weight=1)
             self.grid_columnconfigure(0, weight=1)
 
-            # ===== Top Frame with scrollable actions =====
             top_frame = ctk.CTkFrame(self)
             top_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
@@ -1377,22 +1993,39 @@ def OptionSelector(file_paths):
                 cb.pack(anchor="w", padx=10)
 
             apply_all_btn = ctk.CTkButton(top_frame, text="Apply to All Selected Files", command=self.set_for_all)
-            apply_all_btn.pack(pady=(5, 10))
+            apply_all_btn.pack(pady=(5, 5))
+
+            # NEW: Per-file configuration button
+            per_file_btn = ctk.CTkButton(
+                top_frame, 
+                text="Configure Per-File Addon Settings", 
+                command=self.open_per_file_configurator,
+                fg_color="#4a4a4a"
+            )
+            per_file_btn.pack(pady=(0, 10))
 
             ctk.CTkLabel(top_frame, text="Edit Actions Individually").pack(pady=(0, 5))
 
-            scroll_frame = ctk.CTkScrollableFrame(top_frame, width=480, height=400)
+            scroll_frame = ctk.CTkScrollableFrame(top_frame, width=520, height=350)
             scroll_frame.pack(fill="both", expand=True, pady=(0, 10))
 
+            per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
+            
             for path in file_paths:
                 self.option_vars[path] = {opt: tk.BooleanVar() for opt in FILE_ACTIONS}
 
-                ctk.CTkLabel(scroll_frame, text=os.path.basename(path), anchor="w").pack(anchor="w", padx=10, pady=(5, 0))
+                # Show filename with indicator
+                norm_path = normalize_path(path)
+                filename_text = os.path.basename(path)
+                if norm_path in per_file_configs:
+                    filename_text += " [Custom Config]"
+                    
+                ctk.CTkLabel(scroll_frame, text=filename_text, anchor="w").pack(anchor="w", padx=10, pady=(5, 0))
+                
                 for opt in FILE_ACTIONS:
                     cb = ctk.CTkCheckBox(scroll_frame, text=opt, variable=self.option_vars[path][opt])
                     cb.pack(anchor="w", padx=30)
 
-            # ===== Bottom Frame with Save button =====
             bottom_frame = ctk.CTkFrame(self)
             bottom_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
             bottom_frame.grid_columnconfigure(0, weight=1)
@@ -1404,16 +2037,23 @@ def OptionSelector(file_paths):
             self.after(100, lambda: self.focus_force())
             self.wait_window()
 
+        def open_per_file_configurator(self):
+            files = [p for p in file_paths if os.path.isfile(p)]
+            if not files:
+                messagebox.showwarning("No Files", "No files selected for per-file configuration.")
+                return
+            PerFileAddonConfigurator(self, files)
+
         def set_for_all(self):
             for path_vars in self.option_vars.values():
                 for opt, var in path_vars.items():
                     var.set(self.global_option_vars[opt].get())
 
-        def save_and_close(inner_self):
+        def save_and_close(self):
             if "FileOptions" not in currentConfig:
                 currentConfig["FileOptions"] = {}
 
-            for path, opts in inner_self.option_vars.items():
+            for path, opts in self.option_vars.items():
                 selected = [name for name, var in opts.items() if var.get()]
                 norm_path = normalize_path(path)
                 if selected:
@@ -1422,9 +2062,44 @@ def OptionSelector(file_paths):
                     del currentConfig["FileOptions"][norm_path]
 
             write_config()
-            inner_self.destroy()
+            self.destroy()
 
     OptWin()
+
+def validate_per_file_configs():
+    """Clean up orphaned per-file configurations"""
+    per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
+    files_to_remove = []
+    
+    for file_path, addon_configs in per_file_configs.items():
+        files, folders, _ = get_saved_paths()
+        all_paths = files + folders
+        
+        if file_path not in [normalize_path(p) for p in all_paths]:
+            files_to_remove.append(file_path)
+            continue
+            
+        addons_to_remove = []
+        for addon_name in addon_configs.keys():
+            if addon_name not in FILE_ACTIONS:
+                print(f"{addon_name} not in FILE_ACTIONS")
+                addons_to_remove.append(addon_name)
+        
+        for addon_name in addons_to_remove:
+            del addon_configs[addon_name]
+            
+        if not addon_configs:
+            files_to_remove.append(file_path)
+    
+    for file_path in files_to_remove:
+        del per_file_configs[file_path]
+    
+    if files_to_remove:
+        write_config()
+        print(f"Cleaned up per-file configurations for {len(files_to_remove)} removed files/addons.")
+
+# Call this in your app startup (in if __name__ == "__main__":)
+
 
 
 def shorten_path_end_truncate(path, max_pixel_width, widget):
@@ -2014,84 +2689,95 @@ class FileCopyApp(ctk.CTk):
         #     paths_to_copy.append(path)
 
         def apply_addons_to_file(path, actDestination, folder=None):
-            # print(f"Copying: {path}...")
+            """Enhanced version that uses per-file addon configurations"""
             error_encountered = []
             if folder == None:
                 folder = path
-                #print("folder = path")
-            # Create a temp copy of the file to apply actions
+
             includeNestedFolders = True
             norm_path = normalize_path(folder)
+            
+            # Handle nested folder creation (existing code)
             if includeNestedFolders:
-                    
                 newfolderpath = path.replace(folder, "")
-                #print(f"NEW FOLDER PATH: {newfolderpath}")
                 newfolderpath = newfolderpath[1:]
-                #print(f"NEW FOLDER PATH: {newfolderpath}")
                 newfolderpath = re.split(r"[\\/]", newfolderpath)
-                #print(f"NEW FOLDER PATH: {newfolderpath}")
                 nestedfolderpath = actDestination
 
-                for i in range(0,len(newfolderpath)-1):
-                    #print(newfolderpath[i])
+                for i in range(0, len(newfolderpath)-1):
                     nestedfolderpath = f"{nestedfolderpath}/{newfolderpath[i]}"
                     if not os.path.exists(nestedfolderpath):
-                        
                         os.makedirs(nestedfolderpath)
-                        # Copy permissions and timestamps from source to destination
                         source_folder = "/".join(re.split(r"[\\/]", path)[:-1])
-                        #print(f"source_folder = {source_folder}")
                         shutil.copystat(source_folder, nestedfolderpath)
                         
-                        # Copy any special attributes (e.g., hidden flag on Windows)
                         if os.name == 'nt':
-                            # Set hidden attribute on Windows
                             import ctypes
                             FILE_ATTRIBUTE_HIDDEN = 0x02
                             attrs = ctypes.windll.kernel32.GetFileAttributesW(str(source_folder))
                             if attrs & FILE_ATTRIBUTE_HIDDEN:
                                 ctypes.windll.kernel32.SetFileAttributesW(str(nestedfolderpath), FILE_ATTRIBUTE_HIDDEN)
-                        else:
-                            # On Unix, leading dot makes it hidden, already handled
-                            pass
-                #print(f"{actDestination}\\{"\\".join(newfolderpath[:-1])}")
-                actDestination = f"{actDestination}/{"/".join(newfolderpath[:-1])}"
-            if norm_path.lower() in file_options:
-                
-                #print(f"attempting copy of {path} to {actDestination}")
+
+                actDestination = f"{actDestination}/{'/'.join(newfolderpath[:-1])}"
+
+            file_options = currentConfig.get("FileOptions", {})
+            print("\n\n")
+            per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
+            print(f"{utils.Fore.CYAN}per_file_configs = {per_file_configs}{utils.Fore.RESET}")
+            print(f"{utils.Fore.YELLOW}norm_path.lower() = {norm_path.lower()}{utils.Fore.RESET}")
+            
+            if (norm_path.lower() in file_options) or (norm_path.lower() in per_file_configs.get(normalize_path(path), {})):
+                print(f"{utils.Fore.RED}Did run{utils.Fore.RESET}")
                 new_path = shutil.copy2(path, actDestination)
-                #print(f"coppied {path} successfully!")
-
                 filecontent = None
+                
+                # Get per-file addon configurations for this specific file
+                norm_file_path = normalize_path(path)
+                file_specific_configs = per_file_configs.get(norm_file_path, {})
+                print(f"{utils.Fore.MAGENTA}file_specific_configs = {file_specific_configs}{utils.Fore.RESET}")
 
-                for i in range(5):
-                    # print(f"Running addon priority level: {5-i}")
+                for priority_level in range(5):
                     for action_name in file_options[norm_path]:
                         try:
                             actionFunc, actionPriority = FILE_ACTIONS[action_name]
-                            if actionPriority == 5-i: # Only run if priority is the same as i.
+                            if actionPriority == 5 - priority_level:
                                 addon_obj = next((a for a in loadedAddons if a["name"] == action_name or a["filename"] == action_name), None)
-                                if addon_obj and "argsValues" in addon_obj:
+                                
+                                # Use per-file config if available, otherwise use global addon config
+                                norm_file_path_in_file_specific_configs = utils.Fore.GREEN if norm_file_path in per_file_configs else utils.Fore.RED
+                                action_name_in_file_specific_configs = utils.Fore.GREEN if action_name in file_specific_configs else utils.Fore.RED
+                                print(f"{utils.Fore.YELLOW}if {norm_file_path_in_file_specific_configs}norm_file_path in per_file_configs {utils.Fore.YELLOW}and {action_name_in_file_specific_configs}action_name in file_specific_configs{utils.Fore.YELLOW}:{utils.Fore.RESET}")
+                                if norm_file_path in per_file_configs and action_name in file_specific_configs:
+                                    print(f"{utils.Fore.CYAN}Custom Configs{utils.Fore.RESET}")
+                                    # Use file-specific configuration
+                                    #custom_args = file_specific_configs[action_name]
+                                    print(f"{utils.Fore.BLUE}**addon_obj['argsValues'] = {addon_obj["argsValues"]}{utils.Fore.RESET}")
+                                    print(f"{utils.Fore.LIGHTMAGENTA_EX}'{new_path}' custom_args = {file_specific_configs[action_name]}{utils.Fore.RESET}")
+                                    filecontent = actionFunc(new_path, filecontent, **file_specific_configs[action_name])
+                                elif addon_obj and "argsValues" in addon_obj:
+                                    print(f"{utils.Fore.BLUE}Global config{utils.Fore.RESET}")
+                                    # Use global addon configuration
                                     filecontent = actionFunc(new_path, filecontent, **addon_obj["argsValues"])
                                 else:
+                                    # Use default parameters
                                     filecontent = actionFunc(new_path, filecontent)
 
-                                # print(action_name)
                         except Exception as e:
                             if action_name not in FILE_ACTIONS:
                                 error_encountered.append(f"FILE_ACTIONS[{action_name}] doesn't exist! ERROR: {e}")
                             else:
-                                error_encountered.append(f"Error may have occurred with '{action_name}' while attempting to apply to '{new_path}'.\n{traceback.format_exc()}")
-                                #traceback.print_exc()
+                                error_encountered.append(f"Error with '{action_name}' on '{new_path}'.\n{traceback.format_exc()}")
 
-
+                # Save processed content
                 if filecontent is not None:
-                    with open(new_path, "w", encoding="utf-8") as f:
-                        f.write(filecontent)
+                    try:
+                        _save_processed_content_to_path(filecontent, new_path, original_src_path=path)
+                    except Exception as e:
+                        error_encountered.append(f"Failed to save processed output for '{new_path}': {e}\n{traceback.format_exc()}")
 
-                #shutil.copy2(new_path, actDestination)
-                #os.remove(temp_path)
             else:
+
+                print(f"{utils.Fore.YELLOW}Did NOTTTT run{utils.Fore.RESET}")
                 try:
                     shutil.copy2(path, actDestination)
                 except PermissionError as e:
@@ -2100,9 +2786,9 @@ class FileCopyApp(ctk.CTk):
                     error_encountered.append(f"Other Error: {e}")
 
             if error_encountered == []:
-                print(f"{utils.Fore.GREEN}Coppied: '{path}' successfully!{utils.Fore.RESET}")
+                print(f"{utils.Fore.GREEN}Copied: '{path}' successfully!{utils.Fore.RESET}")
             else:
-                print(f"{utils.Fore.RED}{utils.Style.BRIGHT}Copy failed: '{path}'   :({utils.Style.NORMAL}\n{"\n".join(error_encountered)}{utils.Style.RESET_ALL}")
+                print(f"{utils.Fore.RED}{utils.Style.BRIGHT}Copy failed: '{path}' :({utils.Style.NORMAL}\n{'\n'.join(error_encountered)}{utils.Style.RESET_ALL}")
                 
     
         for path in files + folders:
@@ -2196,6 +2882,11 @@ class FileCopyApp(ctk.CTk):
                 inner_self.tree.column("destinations", width=250, anchor="w", stretch=True)
 
                 inner_self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+
+
+
+                
                 
                 
                 
@@ -2233,6 +2924,10 @@ class FileCopyApp(ctk.CTk):
                         type_, path = row
                         if type_ in ("file","folder"):
                             actions = ",".join(currentConfig.get("FileOptions", {}).get(path.lower(), []))
+                            norm_path = normalize_path(path)
+                            per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
+                            if norm_path in per_file_configs:
+                                actions += " [*]"  # Indicator for custom configs
                         else:
                             actions = ""
 
@@ -2366,6 +3061,7 @@ class FileCopyApp(ctk.CTk):
                             for path in selected_files:
                                 norm_path = normalize_path(path)
                                 existing = currentConfig.get("FileOptions", {}).get(norm_path, [])
+                                existing += currentConfig.get("PerFileAddonConfigs", {}).get(norm_path, [])
                                 self.option_vars[path] = {opt: tk.BooleanVar(value=opt in existing) for opt in FILE_ACTIONS}
 
                                 ctk.CTkLabel(scroll_frame, text=os.path.basename(path), anchor="w").pack(anchor="w", padx=10, pady=(5, 0))
@@ -2510,7 +3206,58 @@ class FileCopyApp(ctk.CTk):
                         refresh_treeview(inner_self=inner_self)
 
                     
+                # ADD this method to your ManageWindow class:
+                def configure_per_file_addons():
+                    selected_items = inner_self.tree.selection()
+                    selected_files = []
 
+                    for item in selected_items:
+                        values = inner_self.tree.item(item)["values"]
+                        if len(values) < 2:
+                            continue
+                        type_, path = values[0], values[1]
+                        if type_ in ("file", "folder"):
+                            selected_files.append(path)
+
+                    if not selected_files:
+                        messagebox.showwarning("No Selection", "Please select one or more files to configure per-file addon settings.")
+                        return
+
+                    PerFileAddonConfigurator(inner_self, selected_files)
+
+                
+                info_label = ctk.CTkLabel(
+                    self, 
+                    text="[*] indicates files with custom per-file addon configurations",
+                    font=("Arial", 10),
+                    text_color=uia.submainTextColor
+                )
+                info_label.pack(pady=(0, 5))
+
+                def create_context_menu():
+                    context_menu = tk.Menu(self, tearoff=0, 
+                                        bg=uia.mainBG, fg=uia.mainTextColor,
+                                        activebackground=uia.mainTreeviewSelectedBG)
+                    context_menu.add_command(label="Configure Per-File Addons", 
+                                            command=configure_per_file_addons)
+                    context_menu.add_command(label="Modify Actions", 
+                                            command=modify_actions)
+                    context_menu.add_command(label="Edit Destinations", 
+                                            command=edit_destinations)
+                    context_menu.add_separator()
+                    context_menu.add_command(label="Delete Selected", 
+                                            command=delete_selected)
+                    return context_menu
+
+                def show_context_menu(event):
+                    try:
+                        context_menu = create_context_menu()
+                        context_menu.tk_popup(event.x_root, event.y_root)
+                    finally:
+                        context_menu.grab_release()
+
+                inner_self.tree.bind("<Button-3>", show_context_menu)  # Right click
+                inner_self.tree.bind("<Control-Button-1>", show_context_menu)  # Ctrl+click
                 
 
 
@@ -2530,6 +3277,9 @@ class FileCopyApp(ctk.CTk):
                 save_btn.pack(side="left", padx=10)
                 edit_dest_btn = ctk.CTkButton(btn_frame, text="Edit Destination", command=edit_destinations)
                 edit_dest_btn.pack(side="left", padx=10)
+                configure_addon_btn = ctk.CTkButton(btn_frame, text="Configure Per-File Addons", 
+                                   command=configure_per_file_addons)
+                configure_addon_btn.pack(side="left", padx=10)
                 inner_self.after(100, lambda: inner_self.focus_force())
                 inner_self.grab_set()
                 inner_self.wait_window()
@@ -2755,5 +3505,6 @@ class FileCopyApp(ctk.CTk):
 
 
 if __name__ == "__main__":
+    validate_per_file_configs()
     app = FileCopyApp()
     app.mainloop()

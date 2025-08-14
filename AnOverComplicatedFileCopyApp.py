@@ -1017,10 +1017,19 @@ customArguments = {
     "rotate_degrees": {"type": "int", "default": "0"},     # Clockwise degrees
     "flip_horizontal": {"type": "bool", "default": False},
     "flip_vertical": {"type": "bool", "default": False},
-    "invert_colors": {"type": "bool", "default": False},   # NEW OPTION
+    "invert_colors": {"type": "bool", "default": False},
     "format_override": {"type": "str", "default": ""},     # "", "PNG", "JPEG", "WEBP", etc.
     "quality": {"type": "int", "default": "90"},
     "optimize": {"type": "bool", "default": True},
+
+    # NEW: color shift as hue rotation (degrees, positive = rotate hues clockwise around color wheel)
+    "hue_shift_degrees": {"type": "int", "default": "0"},
+
+    # NEW: contrast adjustment (1.0 = no change; <1.0 lowers contrast; >1.0 increases)
+    "contrast_factor": {"type": "float", "default": "1.0"},
+
+    # NEW: scale % then tile back to original size (100.0 = no change)
+    "tile_scale_percent": {"type": "float", "default": "100.0"},
 }
 
 def main_addon_function(
@@ -1036,7 +1045,10 @@ def main_addon_function(
     invert_colors=False,
     format_override="",
     quality=90,
-    optimize=True
+    optimize=True,
+    hue_shift_degrees=0,
+    contrast_factor=1.0,
+    tile_scale_percent=100.0,
 ):
     """
     If `content` is provided and is bytes from a previous addon, process that.
@@ -1045,7 +1057,7 @@ def main_addon_function(
     Returns: bytes of the processed image (so downstream addons can keep chaining).
     """
 
-    from PIL import Image, ImageOps  # Pillow
+    from PIL import Image, ImageOps, ImageEnhance  # Pillow
     import os
 
     # Open image from bytes or file
@@ -1057,8 +1069,9 @@ def main_addon_function(
 
     img.load()  # ensure data is loaded before any ops
 
-    # Rotate/flip first (cheap integer ops)
+    # ---------- Geometric ops first (cheap integer ops) ----------
     if rotate_degrees:
+        # Pillow rotate uses CCW; negative makes it CW as your comment indicates
         img = img.rotate(-int(rotate_degrees), expand=True)
 
     if flip_horizontal:
@@ -1066,7 +1079,7 @@ def main_addon_function(
     if flip_vertical:
         img = img.transpose(Image.FLIP_TOP_BOTTOM)
 
-    # Resize if requested
+    # ---------- Resize (pixel resampling) ----------
     rw = int(resize_width) if str(resize_width).strip() != "" else 0
     rh = int(resize_height) if str(resize_height).strip() != "" else 0
 
@@ -1083,17 +1096,19 @@ def main_addon_function(
                 scale = rh / h0
                 target = (max(1, int(w0 * scale)), rh)
         else:
+            w0, h0 = img.size
             target = (w0 if rw <= 0 else rw, h0 if rh <= 0 else rh)
 
         img = img.resize(target, Image.LANCZOS)
 
-    # Mode conversion
+    # ---------- Mode conversion (if explicitly requested) ----------
     convert_mode = str(convert_mode).upper().strip()
     if convert_mode and convert_mode != "KEEP":
         img = img.convert(convert_mode)
 
-    # Invert colors if requested
-    if invert_colors:
+    # ---------- Invert colors ----------
+    # (kept exactly like your implementation, just moved below conversion for consistency)
+    if invert_colors is True:
         # Pillow's invert requires "L" or "RGB" type; handle alpha separately
         if img.mode == "RGBA":
             r, g, b, a = img.split()
@@ -1110,7 +1125,98 @@ def main_addon_function(
                 img = img.convert("RGB")
             img = ImageOps.invert(img)
 
-    # Decide format
+    # ---------- NEW: Color shift via hue rotation ----------
+    # Works best for RGB/RGBA. Preserves alpha if present.
+    hs = int(hue_shift_degrees) if str(hue_shift_degrees).strip() != "" else 0
+    if hs % 360 != 0:
+        # Keep alpha if present
+        has_alpha = img.mode in ("RGBA", "LA")
+        alpha = None
+        base = img
+
+        if img.mode in ("RGBA",):
+            alpha = img.split()[3]
+            base = img.convert("RGB")
+        elif img.mode in ("LA",):
+            alpha = img.split()[1]  # A
+            base = img.convert("L").convert("RGB")
+        elif img.mode not in ("RGB", "L"):
+            base = img.convert("RGB")
+
+        # Convert to HSV and rotate H channel
+        hsv = base.convert("HSV")
+        h, s, v = hsv.split()
+
+        # Pillow's H channel is 0..255. Map degrees to 0..255 with wrap.
+        shift_0_255 = int((hs % 360) * 255 / 360)
+
+        h = h.point(lambda p: (p + shift_0_255) % 256)
+        shifted = Image.merge("HSV", (h, s, v)).convert("RGB")
+
+        if has_alpha:
+            if alpha.mode != "L":
+                alpha = alpha.convert("L")
+            if img.mode in ("RGBA",):
+                img = Image.merge("RGBA", (*shifted.split(), alpha))
+            else:
+                # LA source: convert back to LA by taking luminance of shifted and reusing A
+                luminance = shifted.convert("L")
+                img = Image.merge("LA", (luminance, alpha))
+        else:
+            # If the original was L (grayscale), keep it grayscale
+            if img.mode == "L":
+                img = shifted.convert("L")
+            else:
+                img = shifted
+
+    # ---------- NEW: Contrast adjustment ----------
+    # Uses Pillow's ImageEnhance.Contrast (1.0 = no change)
+    try:
+        cf = float(contrast_factor)
+    except Exception:
+        cf = 1.0
+    if cf != 1.0:
+        # Convert palettized to RGB for predictable results
+        if img.mode == "P":
+            img = img.convert("RGB")
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(cf)
+
+    # ---------- NEW: Scale by % and tile back to original canvas ----------
+    # This creates a repeating pattern of the scaled image to fill the original size.
+    try:
+        tsp = float(tile_scale_percent)
+    except Exception:
+        tsp = 100.0
+    if tsp > 0 and abs(tsp - 100.0) > 1e-6:
+        W, H = img.size
+        # Compute scaled tile size
+        tile_w = max(1, int(round(W * (tsp / 100.0))))
+        tile_h = max(1, int(round(H * (tsp / 100.0))))
+        tile_img = img.resize((tile_w, tile_h), Image.LANCZOS)
+
+        # Choose a transparent/black background as appropriate
+        if img.mode in ("RGBA", "LA"):
+            # Transparent background to preserve alpha regions when tiling
+            bg = 0 if img.mode == "LA" else (0, 0, 0, 0)
+        elif img.mode == "L":
+            bg = 0
+        else:
+            # For RGB, a black background is safe; the tiles will fully cover anyway
+            bg = 0
+
+        tiled = Image.new(img.mode, (W, H), bg)
+        # Paste tile repeatedly; Paste will clip at edges automatically
+        for y in range(0, H, tile_h):
+            for x in range(0, W, tile_w):
+                tiled.paste(tile_img, (x, y))
+        img = tiled
+
+    # Small breath to avoid hammering if called in tight loops
+    import time
+    time.sleep(0.1)
+
+    # ---------- Decide format ----------
     fmt = (format_override or img.format or "").upper().strip()
     if not fmt:
         ext = os.path.splitext(filepath)[1].lower()
@@ -1120,7 +1226,7 @@ def main_addon_function(
         }
         fmt = ext_to_fmt.get(ext, "PNG")
 
-    # Serialize to bytes
+    # ---------- Serialize to bytes ----------
     out = BytesIO()
     save_kwargs = {}
     if fmt in ("JPEG", "WEBP", "TIFF"):
@@ -1136,7 +1242,8 @@ def main_addon_function(
             img = img.convert("RGB")
 
     img.save(out, format=fmt, **save_kwargs)
-    return out.getvalue()''',
+    return out.getvalue()
+''',
 
 
 

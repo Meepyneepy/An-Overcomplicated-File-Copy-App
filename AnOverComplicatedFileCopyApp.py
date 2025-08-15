@@ -72,6 +72,7 @@ class c_UIAppearance:
         self.test1 = "#929292"
         self.test2 = [self.test1, -89]
         self.test3 = [self.test2, "#7A086B", 0.5]
+        self.test3 = [self.test3, "#9900FF", 0.5]
 
 
         # self.mainFontFunc = customtkinter.CTkFont(family=self.mainFontFamily, size=self.mainFontSize, weight=self.mainFontWeight)
@@ -167,6 +168,12 @@ for attr in dir(uia):
 #resolve_actual_color("mainTreeviewActiveBG", _debug_print=True)
 
 
+# A dict of python module name translation
+
+module_translation = {
+    "PIL": "pillow"
+}
+
 
 def extract_imports_from_file(filepath):
     with open(filepath, 'r', encoding='utf-8') as file:
@@ -176,9 +183,11 @@ def extract_imports_from_file(filepath):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                #print(f"{utils.Fore.LIGHTCYAN_EX}ast.Import: alias = {alias.name}{utils.Fore.RESET}")
                 imports.add(alias.name.split('.')[0])
         elif isinstance(node, ast.ImportFrom):
             if node.module:
+                #print(f"{utils.Fore.LIGHTGREEN_EX}ast.ImportFrom: node.module = {node.module}{utils.Fore.RESET}")
                 imports.add(node.module.split('.')[0])
     return list(imports)
 
@@ -191,7 +200,10 @@ def check_missing_imports(module_list):
         try:
             importlib.import_module(module)
         except ImportError:
-            missing.append(module)
+            try:
+                importlib.import_module(module_translation.get(module, module))
+            except ImportError:
+                missing.append(module_translation.get(module, module))
     return missing
 
 
@@ -254,7 +266,7 @@ def read_config():
             else:
                 path = tempFileOptName[0]
             path = normalize_path(path)
-            returnConfig["FileOptions"][path] = config["FileOptions"][k].split(",")
+            returnConfig["FileOptions"][path] = config["FileOptions"][k].split(",|^,")
 
     # Existing Addon settings parsing
     if config.has_section("Addons"):
@@ -273,7 +285,7 @@ def read_config():
                 priority = int(parts[1])
                 args_string = parts[2] if len(parts) > 2 else ""
                 args_dict = {}
-                for arg_pair in args_string.split(","):
+                for arg_pair in args_string.split(",|^,"):
                     if "=" in arg_pair:
                         key, val = arg_pair.split("=", 1)
                         args_dict[key] = val
@@ -317,7 +329,7 @@ def read_config():
                 
                 args_dict = {}
                 if args_string:
-                    for arg_pair in args_string.split(","):
+                    for arg_pair in args_string.split(",|^,"):
                         if "=" in arg_pair:
                             key_name, val = arg_pair.split("=", 1)
                             val = True if str(val) == "True" else val
@@ -356,7 +368,7 @@ def updateCurrentConfig():
 
 updateCurrentConfig()
 
-print(utils.pretty_print_nested(currentConfig))
+#print(utils.pretty_print_nested(currentConfig))
 
 
 def write_config():
@@ -381,7 +393,7 @@ def write_config():
             norm_k = normalize_path(k)
             drive, tail = os.path.splitdrive(norm_k)
             key = f"{drive[:-1]}_!_{tail}" if drive else norm_k
-            tempFileOptions[key] = ",".join(v)
+            tempFileOptions[key] = ",|^,".join(v)
         config["FileOptions"] = {
             k: v for k, v in tempFileOptions.items()
         }
@@ -406,7 +418,7 @@ def write_config():
         config["Addons"][key] = "|".join([
             "1" if addon.get("enabled", True) else "0",
             str(addon.get("priority", 3)),
-            ",".join(
+            ",|^,".join(
                 f"{k}={addon['argsValues'].get(k)}"
                 for k in addon.get("args", {})
             )
@@ -423,7 +435,7 @@ def write_config():
             for addon_name, args_dict in addon_configs.items():
                 # Create a unique key for each file-addon combination
                 full_key = f"{config_key}#___#{gen_unique_id()}"
-                args_string = ",".join(f"{k}={v}" for k, v in args_dict.items())
+                args_string = ",|^,".join(f"{k}={v}" for k, v in args_dict.items())
                 config["PerFileAddonConfigs"][full_key] = f"{addon_name}|^*|{args_string}"
 
     with open(CONFIG_PATH, "w") as configfile:
@@ -995,9 +1007,8 @@ def main_addon_function(filepath, content=None, encoding="utf-8", print_output_i
 
 ''',
 
-"Builtin_Addon_PIL_Image_Processor.py": r'''
+    "Builtin_Addon_PIL_Image_Processor.py": r'''
 from io import BytesIO
-#import pillow
 
 # Display name of addon in app.
 displayName = "(BuiltIn) PIL: Image Processor"
@@ -1005,87 +1016,248 @@ displayName = "(BuiltIn) PIL: Image Processor"
 # Priority level for addon. Run fairly early so text-based addons can still run after if desired.
 priorityLevel = 3
 
-# Requires Pillow. The manager will show it as "missing" if not installed and offer to install.
-#   pip install Pillow
-
-# Configurable parameters
+# ---------------- New & existing configurable parameters ----------------
 customArguments = {
-    "resize_width":  {"type": "int",  "default": "0"},   # 0 = no resize on width
-    "resize_height": {"type": "int",  "default": "0"},   # 0 = no resize on height
-    "keep_aspect_ratio": {"type": "bool", "default": True},
-    "convert_mode":  {"type": "str",  "default": "KEEP"},  # e.g. "RGB", "L" (grayscale), "RGBA", or "KEEP"
-    "rotate_degrees": {"type": "int", "default": "0"},     # Clockwise degrees
-    "flip_horizontal": {"type": "bool", "default": False},
-    "flip_vertical": {"type": "bool", "default": False},
-    "invert_colors": {"type": "bool", "default": False},
-    "format_override": {"type": "str", "default": ""},     # "", "PNG", "JPEG", "WEBP", etc.
-    "quality": {"type": "int", "default": "90"},
-    "optimize": {"type": "bool", "default": True},
+    # Geometry / size
+    "auto_orient_from_exif": {"type": "bool", "default": True},
+    "resize_width":         {"type": "int",  "default": "0"},
+    "resize_height":        {"type": "int",  "default": "0"},
+    "keep_aspect_ratio":    {"type": "bool", "default": True},
+    "rotate_degrees":       {"type": "int",  "default": "0"},
+    "flip_horizontal":      {"type": "bool", "default": False},
+    "flip_vertical":        {"type": "bool", "default": False},
 
-    # NEW: color shift as hue rotation (degrees, positive = rotate hues clockwise around color wheel)
+    # Cropping (two modes; if both set, pixels apply first)
+    # crop_pixels: left,top,right,bottom pixels to trim from each edge (can be 0 or positive)
+    "crop_left_px":   {"type": "int", "default": "0"},
+    "crop_top_px":    {"type": "int", "default": "0"},
+    "crop_right_px":  {"type": "int", "default": "0"},
+    "crop_bottom_px": {"type": "int", "default": "0"},
+    # crop_percent trims % of width/height from each edge (0–100, floats ok)
+    "crop_left_pct":   {"type": "float", "default": "0.0"},
+    "crop_top_pct":    {"type": "float", "default": "0.0"},
+    "crop_right_pct":  {"type": "float", "default": "0.0"},
+    "crop_bottom_pct": {"type": "float", "default": "0.0"},
+
+    # Mode & basic color ops
+    "convert_mode":   {"type": "str",   "default": "KEEP"},  # "RGB","L","RGBA", or "KEEP"
+    "invert_colors":  {"type": "bool",  "default": False},
+
+    # Tone/color controls
+    "brightness_factor": {"type": "float", "default": "1.0"},   # 1.0 no change
+    "saturation_factor": {"type": "float", "default": "1.0"},   # 1.0 no change
+    "sharpness_factor":  {"type": "float", "default": "1.0"},   # 1.0 no change
+    "contrast_factor":   {"type": "float", "default": "1.0"},   # already existed
+    "gamma":             {"type": "float", "default": "1.0"},   # 1.0 no change
+
+    # Hue shift (existing)
     "hue_shift_degrees": {"type": "int", "default": "0"},
 
-    # NEW: contrast adjustment (1.0 = no change; <1.0 lowers contrast; >1.0 increases)
-    "contrast_factor": {"type": "float", "default": "1.0"},
+    # Colorize / duotone / sepia
+    "enable_colorize":  {"type": "bool", "default": False},
+    "colorize_black":   {"type": "str",  "default": "#000000"},
+    "colorize_white":   {"type": "str",  "default": "#FFFFFF"},
+    "colorize_mid":     {"type": "str",  "default": ""},   # optional mid color
+    "enable_sepia":     {"type": "bool", "default": False},
+    "sepia_strength":   {"type": "float","default": "100.0"}, # 0–100
 
-    # NEW: scale % then tile back to original size (100.0 = no change)
-    "tile_scale_percent": {"type": "float", "default": "100.0"},
+    # Global tint overlay
+    "tint_color":     {"type": "str",   "default": ""},    # e.g. "#00FFAA" or "255,128,0,64"
+    "tint_strength":  {"type": "float", "default": "0.0"}, # 0–100 (% blend over)
+
+    # Filters
+    "gaussian_blur_radius": {"type": "float", "default": "0.0"},
+    "unsharp_radius":       {"type": "float", "default": "0.0"},
+    "unsharp_percent":      {"type": "int",   "default": "150"},  # Pillow default-ish
+    "unsharp_threshold":    {"type": "int",   "default": "3"},
+
+    # Tiling (existing)
+    "tile_scale_percent":   {"type": "float", "default": "100.0"},
+
+    # Border
+    "add_border_pixels": {"type": "int", "default": "0"},
+    "border_color":      {"type": "str", "default": "#000000"},
+
+    # Output / saving
+    "format_override": {"type": "str",  "default": ""},
+    "quality":         {"type": "int",  "default": "90"},
+    "optimize":        {"type": "bool", "default": False},
+    "flatten_bg_color":{"type": "str",  "default": ""},      # e.g. "#FFFFFF" to flatten alpha
+    "preserve_exif":   {"type": "bool", "default": True},
 }
 
 def main_addon_function(
     filepath,
     content=None,
+    # geometry
+    auto_orient_from_exif=True,
     resize_width=0,
     resize_height=0,
     keep_aspect_ratio=True,
-    convert_mode="KEEP",
     rotate_degrees=0,
     flip_horizontal=False,
     flip_vertical=False,
+    # cropping
+    crop_left_px=0, crop_top_px=0, crop_right_px=0, crop_bottom_px=0,
+    crop_left_pct=0.0, crop_top_pct=0.0, crop_right_pct=0.0, crop_bottom_pct=0.0,
+    # color mode & simple ops
+    convert_mode="KEEP",
     invert_colors=False,
+    # tone/color
+    brightness_factor=1.0,
+    saturation_factor=1.0,
+    sharpness_factor=1.0,
+    contrast_factor=1.0,
+    gamma=1.0,
+    hue_shift_degrees=0,
+    # colorize / sepia
+    enable_colorize=False,
+    colorize_black="#000000",
+    colorize_white="#FFFFFF",
+    colorize_mid="",
+    enable_sepia=False,
+    sepia_strength=100.0,
+    # tint
+    tint_color="",
+    tint_strength=0.0,
+    # filters
+    gaussian_blur_radius=0.0,
+    unsharp_radius=0.0,
+    unsharp_percent=150,
+    unsharp_threshold=3,
+    # tiling
+    tile_scale_percent=100.0,
+    # border
+    add_border_pixels=0,
+    border_color="#000000",
+    # output
     format_override="",
     quality=90,
     optimize=True,
-    hue_shift_degrees=0,
-    contrast_factor=1.0,
-    tile_scale_percent=100.0,
+    flatten_bg_color="",
+    preserve_exif=True,
 ):
     """
-    If `content` is provided and is bytes from a previous addon, process that.
-    Otherwise read the file at `filepath`.
-
-    Returns: bytes of the processed image (so downstream addons can keep chaining).
+    Process an image. Returns bytes for chaining downstream.
     """
-
-    from PIL import Image, ImageOps, ImageEnhance  # Pillow
+    from PIL import Image, ImageOps, ImageEnhance, ImageFilter
     import os
 
-    # Open image from bytes or file
+    # ---------------- helpers ----------------
+    def _parse_color(c, default=None):
+        """
+        Accepts "#RRGGBB[AA]" or "r,g,b[,a]" (0-255). Returns an RGBA or RGB tuple
+        matching the image mode later. If invalid, returns default.
+        """
+        if not c:
+            return default
+        c = str(c).strip()
+        try:
+            if c.startswith("#"):
+                c = c.lstrip("#")
+                if len(c) == 6:
+                    r = int(c[0:2], 16); g = int(c[2:4], 16); b = int(c[4:6], 16)
+                    return (r, g, b)
+                elif len(c) == 8:
+                    r = int(c[0:2], 16); g = int(c[2:4], 16); b = int(c[4:6], 16); a = int(c[6:8], 16)
+                    return (r, g, b, a)
+                else:
+                    return default
+            else:
+                parts = [int(p.strip()) for p in c.split(",")]
+                if len(parts) == 3:
+                    return tuple(parts)
+                if len(parts) == 4:
+                    return tuple(parts)
+                return default
+        except Exception:
+            return default
+
+    def _apply_gamma(img, g):
+        # gamma < 1 brightens midtones; > 1 darkens midtones
+        if g == 1.0:
+            return img
+        # operate in L or RGB
+        mode = img.mode
+        if mode in ("RGBA", "LA"):
+            base = img.convert("RGB") if mode == "RGBA" else img.convert("L")
+            alpha = img.split()[-1]
+            tbl = [int((i / 255.0) ** (1.0 / max(1e-6, g)) * 255 + 0.5) for i in range(256)]
+            if base.mode == "RGB":
+                r, gch, b = base.split()
+                r = r.point(tbl); gch = gch.point(tbl); b = b.point(tbl)
+                out = Image.merge("RGB", (r, gch, b))
+                return Image.merge("RGBA", (*out.split(), alpha)) if mode == "RGBA" else Image.merge("LA", (out.convert("L"), alpha))
+            else:
+                L = base.point(tbl)
+                return Image.merge("LA", (L, alpha))
+        else:
+            # Ensure RGB or L
+            work = img
+            if work.mode not in ("RGB", "L"):
+                work = work.convert("RGB")
+            tbl = [int((i / 255.0) ** (1.0 / max(1e-6, g)) * 255 + 0.5) for i in range(256)]
+            if work.mode == "RGB":
+                r, gch, b = work.split()
+                r = r.point(tbl); gch = gch.point(tbl); b = b.point(tbl)
+                work = Image.merge("RGB", (r, gch, b))
+            else:
+                work = work.point(tbl)
+            return work if work.mode == img.mode else work.convert(img.mode)
+
+    # ---------------- open ----------------
     if isinstance(content, (bytes, bytearray, memoryview)):
         bio = BytesIO(content)
         img = Image.open(bio)
     else:
         img = Image.open(filepath)
+    img.load()
 
-    img.load()  # ensure data is loaded before any ops
+    # Remember original EXIF (if any) for optional preservation
+    original_exif = img.info.get("exif", None)
 
-    # ---------- Geometric ops first (cheap integer ops) ----------
+    # Auto-orient from EXIF (cheap and avoids “sideways” phone pics)
+    if auto_orient_from_exif:
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+    # ---------------- geometry first ----------------
     if rotate_degrees:
-        # Pillow rotate uses CCW; negative makes it CW as your comment indicates
         img = img.rotate(-int(rotate_degrees), expand=True)
-
     if flip_horizontal:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
     if flip_vertical:
         img = img.transpose(Image.FLIP_TOP_BOTTOM)
 
-    # ---------- Resize (pixel resampling) ----------
+    # Cropping in pixels
+    if any(int(v) > 0 for v in (crop_left_px, crop_top_px, crop_right_px, crop_bottom_px)):
+        W, H = img.size
+        left   = min(max(0, int(crop_left_px)),  W-1)
+        top    = min(max(0, int(crop_top_px)),   H-1)
+        right  = max(min(W - int(crop_right_px), W), left+1)
+        bottom = max(min(H - int(crop_bottom_px), H), top+1)
+        img = img.crop((left, top, right, bottom))
+
+    # Cropping in percent (applies after pixel crop, if set)
+    if any(float(v) > 0 for v in (crop_left_pct, crop_top_pct, crop_right_pct, crop_bottom_pct)):
+        W, H = img.size
+        l = min(max(0.0, float(crop_left_pct)),  100.0) * W / 100.0
+        t = min(max(0.0, float(crop_top_pct)),   100.0) * H / 100.0
+        r = W - (min(max(0.0, float(crop_right_pct)), 100.0) * W / 100.0)
+        b = H - (min(max(0.0, float(crop_bottom_pct)),100.0) * H / 100.0)
+        left, top, right, bottom = int(round(l)), int(round(t)), int(round(r)), int(round(b))
+        left = min(max(0, left),  right-1)
+        top  = min(max(0, top),   bottom-1)
+        img = img.crop((left, top, right, bottom))
+
+    # ---------------- resize ----------------
     rw = int(resize_width) if str(resize_width).strip() != "" else 0
     rh = int(resize_height) if str(resize_height).strip() != "" else 0
-
     if rw > 0 or rh > 0:
+        w0, h0 = img.size
         if keep_aspect_ratio:
-            w0, h0 = img.size
             if rw > 0 and rh > 0:
                 scale = min(rw / w0, rh / h0)
                 target = (max(1, int(w0 * scale)), max(1, int(h0 * scale)))
@@ -1096,137 +1268,196 @@ def main_addon_function(
                 scale = rh / h0
                 target = (max(1, int(w0 * scale)), rh)
         else:
-            w0, h0 = img.size
             target = (w0 if rw <= 0 else rw, h0 if rh <= 0 else rh)
-
         img = img.resize(target, Image.LANCZOS)
 
-    # ---------- Mode conversion (if explicitly requested) ----------
+    # ---------------- mode conversion ----------------
     convert_mode = str(convert_mode).upper().strip()
     if convert_mode and convert_mode != "KEEP":
         img = img.convert(convert_mode)
 
-    # ---------- Invert colors ----------
-    # (kept exactly like your implementation, just moved below conversion for consistency)
+    # ---------------- simple invert ----------------
     if invert_colors is True:
-        # Pillow's invert requires "L" or "RGB" type; handle alpha separately
         if img.mode == "RGBA":
             r, g, b, a = img.split()
-            rgb_image = Image.merge("RGB", (r, g, b))
-            inverted_image = ImageOps.invert(rgb_image)
-            r2, g2, b2 = inverted_image.split()
+            inv = ImageOps.invert(Image.merge("RGB", (r, g, b)))
+            r2, g2, b2 = inv.split()
             img = Image.merge("RGBA", (r2, g2, b2, a))
         elif img.mode == "LA":
             l, a = img.split()
-            inverted_l = ImageOps.invert(l)
-            img = Image.merge("LA", (inverted_l, a))
+            img = Image.merge("LA", (ImageOps.invert(l), a))
         else:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
             img = ImageOps.invert(img)
 
-    # ---------- NEW: Color shift via hue rotation ----------
-    # Works best for RGB/RGBA. Preserves alpha if present.
+    # ---------------- hue shift ----------------
     hs = int(hue_shift_degrees) if str(hue_shift_degrees).strip() != "" else 0
     if hs % 360 != 0:
-        # Keep alpha if present
         has_alpha = img.mode in ("RGBA", "LA")
         alpha = None
         base = img
-
-        if img.mode in ("RGBA",):
-            alpha = img.split()[3]
+        if img.mode == "RGBA":
+            alpha = img.split()[3]; base = img.convert("RGB")
+        elif img.mode == "LA":
+            alpha = img.split()[1]; base = img.convert("L").convert("RGB")
+        elif img.mode not in ("RGB","L"):
             base = img.convert("RGB")
-        elif img.mode in ("LA",):
-            alpha = img.split()[1]  # A
-            base = img.convert("L").convert("RGB")
-        elif img.mode not in ("RGB", "L"):
-            base = img.convert("RGB")
-
-        # Convert to HSV and rotate H channel
         hsv = base.convert("HSV")
         h, s, v = hsv.split()
-
-        # Pillow's H channel is 0..255. Map degrees to 0..255 with wrap.
         shift_0_255 = int((hs % 360) * 255 / 360)
-
         h = h.point(lambda p: (p + shift_0_255) % 256)
         shifted = Image.merge("HSV", (h, s, v)).convert("RGB")
-
         if has_alpha:
-            if alpha.mode != "L":
-                alpha = alpha.convert("L")
-            if img.mode in ("RGBA",):
-                img = Image.merge("RGBA", (*shifted.split(), alpha))
-            else:
-                # LA source: convert back to LA by taking luminance of shifted and reusing A
-                luminance = shifted.convert("L")
-                img = Image.merge("LA", (luminance, alpha))
+            alpha = alpha if alpha.mode == "L" else alpha.convert("L")
+            img = Image.merge("RGBA", (*shifted.split(), alpha)) if img.mode == "RGBA" else Image.merge("LA", (shifted.convert("L"), alpha))
         else:
-            # If the original was L (grayscale), keep it grayscale
-            if img.mode == "L":
-                img = shifted.convert("L")
+            img = shifted if img.mode != "L" else shifted.convert("L")
+
+    # ---------------- tone & color: brightness, contrast, saturation, sharpness, gamma ----------------
+    # Convert palettized to RGB for predictability
+    if img.mode == "P":
+        img = img.convert("RGB")
+
+    if float(brightness_factor) != 1.0:
+        img = ImageEnhance.Brightness(img).enhance(float(brightness_factor))
+    if float(contrast_factor) != 1.0:
+        img = ImageEnhance.Contrast(img).enhance(float(contrast_factor))
+    if float(saturation_factor) != 1.0:
+        img = ImageEnhance.Color(img).enhance(float(saturation_factor))
+    if float(sharpness_factor) != 1.0:
+        img = ImageEnhance.Sharpness(img).enhance(float(sharpness_factor))
+    if float(gamma) != 1.0:
+        img = _apply_gamma(img, float(gamma))
+
+    # ---------------- colorize / sepia ----------------
+    # COLORIZE: maps grayscale L to a two- or three-point gradient via ImageOps.colorize
+    if enable_colorize:
+        # Work on luminance; keep alpha if present
+        has_alpha = img.mode in ("RGBA","LA")
+        alpha = img.split()[-1] if has_alpha else None
+        L = img.convert("L")
+        c_black = _parse_color(colorize_black, (0,0,0))
+        c_white = _parse_color(colorize_white, (255,255,255))
+        c_mid   = _parse_color(colorize_mid, None)
+        if c_mid is not None:
+            colored = ImageOps.colorize(L, black=c_black, white=c_white, mid=c_mid)
+        else:
+            colored = ImageOps.colorize(L, black=c_black, white=c_white)
+        if has_alpha:
+            if img.mode == "RGBA":
+                img = Image.merge("RGBA", (*colored.convert("RGB").split(), alpha if alpha.mode=="L" else alpha.convert("L")))
             else:
-                img = shifted
+                img = Image.merge("LA", (colored.convert("L"), alpha if alpha.mode=="L" else alpha.convert("L")))
+        else:
+            img = colored
 
-    # ---------- NEW: Contrast adjustment ----------
-    # Uses Pillow's ImageEnhance.Contrast (1.0 = no change)
+    # SEPIA: duotone using classic sepia endpoints, blended with original by strength
+    if enable_sepia and float(sepia_strength) > 0:
+        strength = max(0.0, min(100.0, float(sepia_strength))) / 100.0
+        if strength > 0:
+            has_alpha = img.mode in ("RGBA","LA")
+            alpha = img.split()[-1] if has_alpha else None
+            L = img.convert("L")
+            # typical sepia mapping
+            sepia = ImageOps.colorize(L, black=(20, 10, 0), white=(255, 240, 192))
+            base = img.convert("RGB") if img.mode not in ("RGB","RGBA") else img if img.mode=="RGB" else img.convert("RGB")
+            blended = Image.blend(base, sepia.convert("RGB"), strength)
+            if has_alpha:
+                img = Image.merge("RGBA", (*blended.split(), alpha if alpha.mode=="L" else alpha.convert("L")))
+            else:
+                img = blended
+
+    # ---------------- tint overlay ----------------
+    if tint_color and float(tint_strength) > 0:
+        strength = max(0.0, min(100.0, float(tint_strength))) / 100.0
+        if strength > 0:
+            tint = _parse_color(tint_color, None)
+            if tint is not None:
+                # ensure RGB(A)
+                has_alpha = img.mode in ("RGBA","LA")
+                if img.mode not in ("RGB","RGBA"):
+                    img = img.convert("RGBA" if has_alpha else "RGB")
+                W, H = img.size
+                if len(tint) == 3:
+                    overlay = Image.new("RGB", (W, H), tint)
+                    base = img.convert("RGB")
+                    mixed = Image.blend(base, overlay, strength)
+                    if has_alpha:
+                        img = Image.merge("RGBA", (*mixed.split(), img.split()[-1]))
+                    else:
+                        img = mixed
+                else:
+                    overlay = Image.new("RGBA", (W, H), tint)
+                    base = img.convert("RGBA")
+                    mixed = Image.blend(base, overlay, strength)
+                    img = mixed
+
+    # ---------------- filters: blur & unsharp ----------------
     try:
-        cf = float(contrast_factor)
+        gr = float(gaussian_blur_radius)
+        if gr > 0:
+            img = img.filter(ImageFilter.GaussianBlur(radius=gr))
     except Exception:
-        cf = 1.0
-    if cf != 1.0:
-        # Convert palettized to RGB for predictable results
-        if img.mode == "P":
-            img = img.convert("RGB")
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(cf)
+        pass
+    try:
+        ur = float(unsharp_radius)
+        if ur > 0:
+            img = img.filter(ImageFilter.UnsharpMask(radius=ur, percent=int(unsharp_percent), threshold=int(unsharp_threshold)))
+    except Exception:
+        pass
 
-    # ---------- NEW: Scale by % and tile back to original canvas ----------
-    # This creates a repeating pattern of the scaled image to fill the original size.
+    # ---------------- tiling (existing) ----------------
     try:
         tsp = float(tile_scale_percent)
     except Exception:
         tsp = 100.0
     if tsp > 0 and abs(tsp - 100.0) > 1e-6:
         W, H = img.size
-        # Compute scaled tile size
         tile_w = max(1, int(round(W * (tsp / 100.0))))
         tile_h = max(1, int(round(H * (tsp / 100.0))))
         tile_img = img.resize((tile_w, tile_h), Image.LANCZOS)
-
-        # Choose a transparent/black background as appropriate
         if img.mode in ("RGBA", "LA"):
-            # Transparent background to preserve alpha regions when tiling
             bg = 0 if img.mode == "LA" else (0, 0, 0, 0)
         elif img.mode == "L":
             bg = 0
         else:
-            # For RGB, a black background is safe; the tiles will fully cover anyway
             bg = 0
-
         tiled = Image.new(img.mode, (W, H), bg)
-        # Paste tile repeatedly; Paste will clip at edges automatically
         for y in range(0, H, tile_h):
             for x in range(0, W, tile_w):
                 tiled.paste(tile_img, (x, y))
         img = tiled
 
-    # Small breath to avoid hammering if called in tight loops
-    import time
-    time.sleep(0.1)
+    # ---------------- border ----------------
+    if int(add_border_pixels) > 0:
+        bc = _parse_color(border_color, (0,0,0))
+        img = ImageOps.expand(img, border=int(add_border_pixels), fill=bc if bc is not None else 0)
 
-    # ---------- Decide format ----------
+    # ---------------- breathe ----------------
+    import time
+    time.sleep(0.05)
+
+    # ---------------- decide format & flatten for non-alpha outputs ----------------
     fmt = (format_override or img.format or "").upper().strip()
     if not fmt:
         ext = os.path.splitext(filepath)[1].lower()
-        ext_to_fmt = {
-            ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
-            ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".gif": "GIF"
-        }
-        fmt = ext_to_fmt.get(ext, "PNG")
+        fmt = {".jpg":"JPEG",".jpeg":"JPEG",".png":"PNG",".webp":"WEBP",".tif":"TIFF",".tiff":"TIFF",".bmp":"BMP",".gif":"GIF"}.get(ext, "PNG")
 
-    # ---------- Serialize to bytes ----------
+    # Optional flattening (useful when saving JPEG)
+    flatten = False
+    if fmt in ("JPEG",) and img.mode in ("RGBA","LA","P"):
+        flatten = True
+    if flatten or (flatten_bg_color and str(flatten_bg_color).strip()):
+        bg = _parse_color(flatten_bg_color, (255,255,255))
+        if img.mode in ("RGBA","LA"):
+            base = Image.new("RGB" if img.mode=="RGBA" else "L", img.size, bg if img.mode=="RGBA" else (bg[0] if isinstance(bg, tuple) else 255))
+            base.paste(img, mask=img.split()[-1])
+            img = base if fmt=="JPEG" else img  # force flatten before JPEG
+        elif img.mode == "P":
+            img = img.convert("RGB")
+
+    # ---------------- serialize ----------------
     out = BytesIO()
     save_kwargs = {}
     if fmt in ("JPEG", "WEBP", "TIFF"):
@@ -1238,11 +1469,16 @@ def main_addon_function(
 
     if fmt == "JPEG":
         save_kwargs.setdefault("progressive", True)
-        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        if img.mode not in ("L","RGB"):
             img = img.convert("RGB")
+
+    # Preserve EXIF if desired and present (JPEG/TIFF support)
+    if preserve_exif and original_exif and fmt in ("JPEG","TIFF"):
+        save_kwargs["exif"] = original_exif
 
     img.save(out, format=fmt, **save_kwargs)
     return out.getvalue()
+
 ''',
 
 
@@ -1357,7 +1593,12 @@ def load_available_addons():
 
                 # Check for missing imports
                 imports = extract_imports_from_file(full_path)
+                #print(f"{utils.Fore.YELLOW}imports = {imports}{utils.Fore.RESET}")
                 missing = check_missing_imports(imports)
+                #print(f"{utils.Fore.LIGHTRED_EX}missing imports = {missing}{utils.Fore.RESET}")
+                #missing = list(set(module_translation.get(item, item) for item in imports))
+                #print(f"{utils.Fore.CYAN}new missing imports = {imports}{utils.Fore.RESET}")
+                
                 addon["missing_imports"] = missing
 
                 # === Merge saved config ===
@@ -1513,73 +1754,468 @@ def _save_processed_content_to_path(output_obj, out_path, original_src_path=None
 
 
 
+# class PerFileAddonConfigurator(ctk.CTkToplevel):
+#     """Dialog for configuring addon settings for specific files"""
+#     def __init__(self, parent, file_paths):
+#         super().__init__(parent)
+#         self.title("Configure Per-File Addon Settings")
+#         self.geometry("700x600")
+#         self.file_paths = file_paths
+#         self.per_file_configs = {}
+        
+#         # Initialize with existing configs
+#         for file_path in file_paths:
+#             norm_path = normalize_path(file_path)
+#             self.per_file_configs[norm_path] = currentConfig.get("PerFileAddonConfigs", {}).get(norm_path, {}).copy()
+
+#         self.create_widgets()
+#         self.after(100, lambda: self.focus_force())
+#         self.grab_set()
+#         self.wait_window()
+
+#     def create_widgets(self):
+#         # File selector
+#         file_frame = ctk.CTkFrame(self)
+#         file_frame.pack(fill="x", padx=10, pady=(10, 5))
+        
+#         ctk.CTkLabel(file_frame, text="Select File:").pack(side="left", padx=(10, 5))
+        
+#         self.file_var = tk.StringVar(value=self.file_paths[0] if self.file_paths else "")
+#         self.file_combo = ctk.CTkComboBox(
+#             file_frame, 
+#             values=[os.path.basename(f) for f in self.file_paths],
+#             variable=self.file_var,
+#             command=self.on_file_changed,
+#             width=300
+#         )
+#         self.file_combo.pack(side="left", padx=5)
+
+#         # Addon selector
+#         addon_frame = ctk.CTkFrame(self)
+#         addon_frame.pack(fill="x", padx=10, pady=5)
+        
+#         ctk.CTkLabel(addon_frame, text="Select Addon:").pack(side="left", padx=(10, 5))
+        
+#         self.addon_var = tk.StringVar()
+#         addon_names = list(FILE_ACTIONS.keys())
+#         self.addon_combo = ctk.CTkComboBox(
+#             addon_frame,
+#             values=addon_names,
+#             variable=self.addon_var,
+#             command=self.on_addon_changed,
+#             width=300
+#         )
+#         self.addon_combo.pack(side="left", padx=5)
+
+#         add_config_btn = ctk.CTkButton(
+#             addon_frame,
+#             text="Add/Edit Config",
+#             command=self.add_edit_config,
+#             width=100
+#         )
+#         add_config_btn.pack(side="left", padx=5)
+
+#         # Configuration display
+#         config_frame = ctk.CTkFrame(self)
+#         config_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+#         ctk.CTkLabel(config_frame, text="Current Configurations:").pack(anchor="w", padx=10, pady=(10, 5))
+        
+#         self.config_listbox = tk.Listbox(
+#             config_frame,
+#             background=uia.mainTreeviewBG,
+#             foreground=uia.mainTreeviewTextColor,
+#             selectbackground=uia.mainTreeviewSelectedBG,
+#             font=uia.mainTreeviewFont
+#         )
+#         self.config_listbox.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+#         # Control buttons
+#         btn_frame = ctk.CTkFrame(config_frame)
+#         btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+#         edit_btn = ctk.CTkButton(btn_frame, text="Edit Selected", command=self.edit_selected_config)
+#         edit_btn.pack(side="left", padx=(0, 5))
+        
+#         remove_btn = ctk.CTkButton(btn_frame, text="Remove Selected", command=self.remove_selected_config)
+#         remove_btn.pack(side="left", padx=5)
+
+#         # Bottom buttons
+#         bottom_frame = ctk.CTkFrame(self)
+#         bottom_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+#         save_btn = ctk.CTkButton(bottom_frame, text="Save", command=self.save_configs)
+#         save_btn.pack(side="right", padx=5)
+        
+#         cancel_btn = ctk.CTkButton(bottom_frame, text="Cancel", command=self.destroy)
+#         cancel_btn.pack(side="right", padx=(0, 5))
+
+#         # Initialize display
+#         self.refresh_config_display()
+
+#     def on_file_changed(self, selected_basename):
+#         # Find the full path from basename
+#         for path in self.file_paths:
+#             if os.path.basename(path) == selected_basename:
+#                 self.file_var.set(path)
+#                 break
+#         self.refresh_config_display()
+
+#     def on_addon_changed(self, selected_addon):
+#         pass  # Could add preview of default settings here
+
+#     def add_edit_config(self):
+#         current_file = self.file_var.get()
+#         current_addon = self.addon_var.get()
+        
+#         if not current_file or not current_addon:
+#             messagebox.showwarning("Selection Required", "Please select both a file and an addon.")
+#             return
+
+#         # Find the addon object to get its parameters
+#         addon_obj = next((a for a in loadedAddons if a["name"] == current_addon or a["filename"] == current_addon), None)
+#         if not addon_obj or not addon_obj.get("args"):
+#             messagebox.showinfo("No Parameters", f"The addon '{current_addon}' has no configurable parameters.")
+#             return
+
+#         norm_path = normalize_path(current_file)
+#         existing_config = self.per_file_configs.get(norm_path, {}).get(current_addon, {})
+
+#         self.edit_addon_parameters(addon_obj, existing_config, norm_path, current_addon)
+
+#     def edit_addon_parameters(self, addon_obj, existing_config, file_path, addon_name):
+#         class ParamEditor(ctk.CTkToplevel):
+#             def __init__(self):
+#                 super().__init__()
+#                 self.title(f"Configure {addon_name} for {os.path.basename(file_path)}")
+#                 self.geometry("500x400")
+#                 self.vars = {}
+
+#                 # Create parameter controls
+#                 scroll_frame = ctk.CTkScrollableFrame(self, width=460, height=300)
+#                 scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+#                 for param_name, param_meta in addon_obj["args"].items():
+#                     param_type = param_meta.get("type", "str")
+#                     default_value = param_meta.get("default", "")
+#                     current_value = existing_config.get(param_name, default_value)
+
+#                     frame = ctk.CTkFrame(scroll_frame)
+#                     frame.pack(fill="x", pady=5, padx=5)
+
+#                     ctk.CTkLabel(frame, text=f"{param_name}:").pack(anchor="w", padx=5)
+
+#                     if param_type == "bool":
+#                         var = tk.BooleanVar(value=bool(current_value) if isinstance(current_value, bool) else str(current_value).lower() in ['true', '1', 'yes'])
+#                         cb = ctk.CTkCheckBox(frame, text="", variable=var)
+#                         cb.pack(anchor="w", padx=20)
+#                     elif param_type == "int":
+#                         var = tk.StringVar(value=str(current_value))
+#                         entry = ctk.CTkEntry(frame, textvariable=var, placeholder_text="Enter integer")
+#                         entry.pack(fill="x", padx=20)
+#                     else:  # str
+#                         var = tk.StringVar(value=str(current_value))
+#                         entry = ctk.CTkEntry(frame, textvariable=var, placeholder_text="Enter text")
+#                         entry.pack(fill="x", padx=20)
+
+#                     self.vars[param_name] = (var, param_type)
+
+#                 # Buttons
+#                 btn_frame = ctk.CTkFrame(self)
+#                 btn_frame.pack(fill="x", padx=10, pady=10)
+
+#                 save_btn = ctk.CTkButton(btn_frame, text="Save", command=self.save_params)
+#                 save_btn.pack(side="right", padx=5)
+
+#                 cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy)
+#                 cancel_btn.pack(side="right", padx=(0, 5))
+
+#                 self.after(100, lambda: self.focus_force())
+#                 self.grab_set()
+#                 self.wait_window()
+
+#             def save_params(self):
+#                 new_config = {}
+#                 for param_name, (var, param_type) in self.vars.items():
+#                     value = var.get()
+                    
+#                     # Type conversion
+#                     if param_type == "int":
+#                         try:
+#                             value = int(value)
+#                         except ValueError:
+#                             messagebox.showerror("Invalid Input", f"'{param_name}' must be an integer.")
+#                             return
+#                     elif param_type == "bool":
+#                         value = bool(value)
+#                     # str values remain as-is
+                    
+#                     new_config[param_name] = value
+
+#                 # Update the main configurator's data
+#                 if file_path not in outer_self.per_file_configs:
+#                     outer_self.per_file_configs[file_path] = {}
+#                 outer_self.per_file_configs[file_path][addon_name] = new_config
+                
+#                 outer_self.refresh_config_display()
+#                 self.destroy()
+
+#         outer_self = self
+#         ParamEditor()
+
+#     def edit_selected_config(self):
+#         selection = self.config_listbox.curselection()
+#         if not selection:
+#             messagebox.showwarning("No Selection", "Please select a configuration to edit.")
+#             return
+
+#         selected_text = self.config_listbox.get(selection[0])
+#         # Parse the format: "addon_name: param1=val1, param2=val2"
+#         if ":" not in selected_text:
+#             return
+
+#         addon_name = selected_text.split(":")[0].strip()
+#         print(loadedAddons)
+#         for i in range(1, len(selected_text.split(":")) + 1):
+#             candidate_key = ":".join(selected_text.split(":")[:i]).strip()
+#             print(candidate_key)
+#             print(f"test funct: {candidate_key in loadedAddons}")
+#             if any(d["name"] == candidate_key for d in loadedAddons):
+#                 addon_name = candidate_key
+#                 break
+#         current_file = self.file_var.get()
+        
+#         # Find addon object and edit
+#         addon_obj = next((a for a in loadedAddons if a["name"] == addon_name or a["filename"] == addon_name), None)
+#         if addon_obj:
+#             norm_path = normalize_path(current_file)
+#             existing_config = self.per_file_configs.get(norm_path, {}).get(addon_name, {})
+#             self.edit_addon_parameters(addon_obj, existing_config, norm_path, addon_name)
+
+#     def remove_selected_config(self):
+#         selection = self.config_listbox.curselection()
+#         if not selection:
+#             messagebox.showwarning("No Selection", "Please select a configuration to remove.")
+#             return
+
+#         selected_text = self.config_listbox.get(selection[0])
+#         addon_name = selected_text.split(":")[0].strip()
+#         for i in range(1, len(selected_text.split(":")) + 1):
+#             candidate_key = ":".join(selected_text.split(":")[:i]).strip()
+#             print(candidate_key)
+#             print(f"test funct: {candidate_key in loadedAddons}")
+#             if any(d["name"] == candidate_key for d in loadedAddons):
+#                 addon_name = candidate_key
+#                 break
+#         current_file = self.file_var.get()
+#         norm_path = normalize_path(current_file)
+
+#         print(self.per_file_configs[norm_path][addon_name])
+
+#         if norm_path in self.per_file_configs and addon_name in self.per_file_configs[norm_path]:
+#             del self.per_file_configs[norm_path][addon_name]
+#             if not self.per_file_configs[norm_path]:
+#                 del self.per_file_configs[norm_path]
+#             self.refresh_config_display()
+
+#     def refresh_config_display(self):
+#         self.config_listbox.delete(0, tk.END)
+#         current_file = self.file_var.get()
+#         if not current_file:
+#             return
+
+#         norm_path = normalize_path(current_file)
+#         configs = self.per_file_configs.get(norm_path, {})
+
+#         for addon_name, params in configs.items():
+#             param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+#             display_text = f"{addon_name}: {param_str}"
+#             self.config_listbox.insert(tk.END, display_text)
+
+#     def save_configs(self):
+#         # Update global config
+#         if "PerFileAddonConfigs" not in currentConfig:
+#             currentConfig["PerFileAddonConfigs"] = {}
+
+#         print(self.per_file_configs.items())
+        
+#         for file_path, configs in self.per_file_configs.items():
+#             print(f"file_path = {file_path}, configs = {configs}")
+#             if configs:  # Only save non-empty configs
+#                 currentConfig["PerFileAddonConfigs"][file_path] = configs
+#                 print("is configs")
+#             elif file_path in currentConfig["PerFileAddonConfigs"]:
+#                 # Remove empty configs
+#                 print("no configs")
+#                 del currentConfig["PerFileAddonConfigs"][file_path]
+#         if not self.per_file_configs.items():
+#             del currentConfig["PerFileAddonConfigs"][normalize_path(self.file_var.get())]
+
+#         write_config()
+#         self.destroy()
+
+USE_GLOBAL_SENTINEL = "__USE_GLOBAL__"
+
 class PerFileAddonConfigurator(ctk.CTkToplevel):
-    """Dialog for configuring addon settings for specific files"""
+    """
+    Unified dialog for:
+      1) Global + per-file FILE_ACTIONS selection
+      2) Per-file addon parameter configuration (from loadedAddons args)
+    Writes to:
+      - currentConfig["FileOptions"][normalize_path(file)] = [list of enabled actions]
+      - currentConfig["PerFileAddonConfigs"][normalize_path(file)][addon_name] = {param:value,...}
+    """
     def __init__(self, parent, file_paths):
         super().__init__(parent)
-        self.title("Configure Per-File Addon Settings")
-        self.geometry("700x600")
-        self.file_paths = file_paths
-        self.per_file_configs = {}
-        
-        # Initialize with existing configs
-        for file_path in file_paths:
-            norm_path = normalize_path(file_path)
-            self.per_file_configs[norm_path] = currentConfig.get("PerFileAddonConfigs", {}).get(norm_path, {}).copy()
+        self.title("File Actions & Addon Configuration")
+        self.geometry("1000x700")
 
-        self.create_widgets()
+        # --- external deps expected to exist in your app context ---
+        # - FILE_ACTIONS: dict or iterable of action names
+        # - loadedAddons: list of dicts with "name"/"filename" and optional "args" schema
+        # - currentConfig: global dict-like config object
+        # - normalize_path(path): canonicalizes file path
+        # - write_config(): persists currentConfig
+        # - uia: UI appearance values
+        # -----------------------------------------------------------
+
+        self.file_paths = [p for p in file_paths if os.path.isfile(p)]
+        self.norm_paths = [normalize_path(p) for p in self.file_paths]
+
+        # in-memory working copies so Cancel discards changes
+        self._working_file_options = {}  # {norm_path: [enabled actions]}
+        self._working_per_file_addon_cfgs = {}  # {norm_path: {addon_name: {param: val}}}
+
+        # prime with existing config (deep-ish copy)
+        existing_file_opts = currentConfig.get("FileOptions", {})
+        existing_perfile = currentConfig.get("PerFileAddonConfigs", {})
+
+        for np in self.norm_paths:
+            if np in existing_file_opts:
+                self._working_file_options[np] = list(existing_file_opts[np])
+            if np in existing_perfile:
+                # shallow-copy of per-addon dicts
+                self._working_per_file_addon_cfgs[np] = {an: dict(cfg)
+                                                         for an, cfg in existing_perfile[np].items()}
+
+        # UI state
+        self.global_option_vars = {opt: tk.BooleanVar(value=False) for opt in FILE_ACTIONS}
+        self.option_vars = {}  # {path: {action: BooleanVar}}
+        self.file_var = tk.StringVar(value=self.file_paths[0] if self.file_paths else "")
+        self.addon_var = tk.StringVar(value="")
+        # NEW: list of addon names, and a place to store the left-panel check vars
+        self.addon_names = [a.get("name") or a.get("filename") for a in loadedAddons]
+        self.addon_check_vars = {}  # {path: {addon: tk.BooleanVar}}
+
+        # NEW: stale/missing addon tracking (present in FileOptions but not in loadedAddons)
+        self._stale_file_actions = {}  # {norm_path: set(missing_addon_names)}
+        self._stale_to_remove = {}     # {norm_path: set(missing_addon_names_marked_for_removal)}
+
+
+        # NEW: ensure global config container exists
+        currentConfig.setdefault("GlobalAddonConfigs", {})  # {addon_name: {param: val}, presence => globally enabled
+
+        self.config_listbox = None
+
+        self._working_addon_inclusions = {}  # {norm_path: set(addon_names)}
+
+        for np in self.norm_paths:
+            actions = list(currentConfig.get("FileOptions", {}).get(np, []))
+
+            # NEW: split actions into known addon names vs missing addon names
+            included = {a for a in actions if a in self.addon_names}
+            missing = {a for a in actions if a not in self.addon_names}
+
+            if included:
+                self._working_addon_inclusions[np] = set(included)
+
+            if missing:
+                self._stale_file_actions[np] = set(missing)
+
+            # initialize removal bucket per file
+            self._stale_to_remove[np] = set()
+
+
+        # === Layout ===
+        self._build_ui()
+        self._populate_per_file_action_panel()
+        self._refresh_config_display()
+
         self.after(100, lambda: self.focus_force())
         self.grab_set()
         self.wait_window()
 
-    def create_widgets(self):
-        # File selector
-        file_frame = ctk.CTkFrame(self)
-        file_frame.pack(fill="x", padx=10, pady=(10, 5))
-        
+    # ---------------- UI BUILD ----------------
+
+    def _build_ui(self):
+        # Top-level grid: just body + bottom now (no header)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # Main Body: left (per-file actions) | right (per-file addon params)
+        body = ctk.CTkFrame(self)
+        body.grid(row=0, column=0, sticky="nsew", padx=10, pady=5)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        # LEFT: Per-file actions list (view-only)
+        left = ctk.CTkFrame(body)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
+        left.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(left, text="Applied Addons Per File (view-only)").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 5)
+        )
+        self._file_actions_scroll = ctk.CTkScrollableFrame(left, width=380, height=460)
+        self._file_actions_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        # RIGHT: Per-file addon parameter configuration
+        right = ctk.CTkFrame(body)
+        right.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=5)
+        right.grid_rowconfigure(3, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+
+        # File chooser (combo by basename but stores full path via handler)
+        file_frame = ctk.CTkFrame(right)
+        file_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+
         ctk.CTkLabel(file_frame, text="Select File:").pack(side="left", padx=(10, 5))
-        
-        self.file_var = tk.StringVar(value=self.file_paths[0] if self.file_paths else "")
-        self.file_combo = ctk.CTkComboBox(
-            file_frame, 
+        ctk.CTkComboBox(
+            file_frame,
             values=[os.path.basename(f) for f in self.file_paths],
             variable=self.file_var,
-            command=self.on_file_changed,
+            command=self._on_file_changed_from_basename,
             width=300
-        )
-        self.file_combo.pack(side="left", padx=5)
+        ).pack(side="left", padx=5)
 
-        # Addon selector
-        addon_frame = ctk.CTkFrame(self)
-        addon_frame.pack(fill="x", padx=10, pady=5)
-        
+        # Addon chooser
+        addon_frame = ctk.CTkFrame(right)
+        addon_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+
         ctk.CTkLabel(addon_frame, text="Select Addon:").pack(side="left", padx=(10, 5))
-        
-        self.addon_var = tk.StringVar()
-        addon_names = list(FILE_ACTIONS.keys())
-        self.addon_combo = ctk.CTkComboBox(
+        addon_names = [a.get("name") or a.get("filename") for a in loadedAddons]
+        if addon_names and addon_names[0] is not None:
+            self.addon_var.set(addon_names[0])
+        ctk.CTkComboBox(
             addon_frame,
             values=addon_names,
             variable=self.addon_var,
-            command=self.on_addon_changed,
+            command=lambda _: None,
             width=300
-        )
-        self.addon_combo.pack(side="left", padx=5)
+        ).pack(side="left", padx=5)
 
-        add_config_btn = ctk.CTkButton(
-            addon_frame,
-            text="Add/Edit Config",
-            command=self.add_edit_config,
-            width=100
-        )
-        add_config_btn.pack(side="left", padx=5)
+        ctk.CTkButton(addon_frame, text="Add/Edit Config", command=self._add_or_edit_addon_params, width=110).pack(side="left", padx=5)
 
-        # Configuration display
-        config_frame = ctk.CTkFrame(self)
-        config_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        ctk.CTkLabel(config_frame, text="Current Configurations:").pack(anchor="w", padx=10, pady=(10, 5))
-        
+        # Config display (listbox + edit/remove + NEW copy-to-all)
+        config_frame = ctk.CTkFrame(right)
+        config_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        config_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(config_frame, text="Current Addon Configurations (for selected file):").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 5)
+        )
+
         self.config_listbox = tk.Listbox(
             config_frame,
             background=uia.mainTreeviewBG,
@@ -1587,231 +2223,532 @@ class PerFileAddonConfigurator(ctk.CTkToplevel):
             selectbackground=uia.mainTreeviewSelectedBG,
             font=uia.mainTreeviewFont
         )
-        self.config_listbox.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        self.config_listbox.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 5))
 
-        # Control buttons
         btn_frame = ctk.CTkFrame(config_frame)
-        btn_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        edit_btn = ctk.CTkButton(btn_frame, text="Edit Selected", command=self.edit_selected_config)
-        edit_btn.pack(side="left", padx=(0, 5))
-        
-        remove_btn = ctk.CTkButton(btn_frame, text="Remove Selected", command=self.remove_selected_config)
-        remove_btn.pack(side="left", padx=5)
+        btn_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+        ctk.CTkButton(btn_frame, text="Edit Selected", command=self._edit_selected_config).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(btn_frame, text="Remove Selected", command=self._remove_selected_config).pack(side="left", padx=5)
+
+        # NEW: copies the currently selected file’s addons + settings to all other files
+        ctk.CTkButton(btn_frame, text="Copy This File’s Addons to All", command=self._copy_current_file_addons_to_all).pack(side="right")
 
         # Bottom buttons
-        bottom_frame = ctk.CTkFrame(self)
-        bottom_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        save_btn = ctk.CTkButton(bottom_frame, text="Save", command=self.save_configs)
-        save_btn.pack(side="right", padx=5)
-        
-        cancel_btn = ctk.CTkButton(bottom_frame, text="Cancel", command=self.destroy)
-        cancel_btn.pack(side="right", padx=(0, 5))
+        bottom = ctk.CTkFrame(self)
+        bottom.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        bottom.grid_columnconfigure(0, weight=1)
 
-        # Initialize display
-        self.refresh_config_display()
+        ctk.CTkButton(bottom, text="Save", command=self._save_all).grid(row=0, column=0, sticky="e", padx=(0, 5))
+        ctk.CTkButton(bottom, text="Cancel", command=self.destroy).grid(row=0, column=1, sticky="e")
 
-    def on_file_changed(self, selected_basename):
-        # Find the full path from basename
-        for path in self.file_paths:
-            if os.path.basename(path) == selected_basename:
-                self.file_var.set(path)
-                break
-        self.refresh_config_display()
 
-    def on_addon_changed(self, selected_addon):
-        pass  # Could add preview of default settings here
+    # ---------------- HELPERS / POPULATORS ----------------
 
-    def add_edit_config(self):
+    def _copy_current_file_addons_to_all(self):
+        """Copy the currently selected file's applied addons and per-file settings to all other files."""
         current_file = self.file_var.get()
-        current_addon = self.addon_var.get()
-        
+        if not current_file:
+            messagebox.showwarning("No File Selected", "Please select a file first.")
+            return
+
+        src_norm = normalize_path(current_file)
+
+        # Source sets: included addons + per-file custom configs (only for those included)
+        src_included = set(self._working_addon_inclusions.get(src_norm, set()))
+        src_perfile_cfgs = dict(self._working_per_file_addon_cfgs.get(src_norm, {}))
+        # Safety: keep only configs for addons that are actually included on the source
+        src_perfile_cfgs = {an: (dict(cfg) if isinstance(cfg, dict) else {}) for an, cfg in src_perfile_cfgs.items() if an in src_included}
+
+        updated_count = 0
+        for norm in self.norm_paths:
+            if norm == src_norm:
+                continue  # skip the source itself
+
+            # Overwrite the destination to match source "applied addons" (modes preserved):
+            # - *Included* set becomes exactly the source included set
+            # - Per-file configs exist only for addons that are "custom" on the source
+            if src_included:
+                self._working_addon_inclusions[norm] = set(src_included)
+            else:
+                self._working_addon_inclusions.pop(norm, None)
+
+            if src_perfile_cfgs:
+                self._working_per_file_addon_cfgs[norm] = {
+                    an: (dict(cfg) if isinstance(cfg, dict) else {}) for an, cfg in src_perfile_cfgs.items()
+                }
+            else:
+                # No custom configs on source -> ensure none remain on the destination
+                self._working_per_file_addon_cfgs.pop(norm, None)
+
+            updated_count += 1
+
+        # Refresh UI badges/rows so user immediately sees results
+        self._refresh_config_display()
+
+        messagebox.showinfo("Copied",
+                            f"Copied addons and per-file settings from:\n"
+                            f"  {os.path.basename(current_file)}\n\n"
+                            f"to {updated_count} other file(s).")
+
+
+    def _apply_global_to_all(self):
+        for path, actions in self.option_vars.items():
+            for opt, var in actions.items():
+                var.set(self.global_option_vars[opt].get())
+        self._flush_option_vars_to_working()
+
+    # NEW: compute whether an addon applies to a given file, and from where
+    def _is_addon_applied(self, norm, addon_name):
+        """Return (applied: bool, source: 'custom'|'global'|'off') following:
+        - Included AND has per-file params  => (True, 'custom')
+        - Included AND no per-file params  => (True, 'global')
+        - Not included                     => (False, 'off')
+        """
+        perfile = self._working_per_file_addon_cfgs.get(norm, {}) or {}
+        included = addon_name in (self._working_addon_inclusions.get(norm, set()))
+        if not included:
+            return False, "off"
+        if addon_name in perfile:
+            return True, "custom"
+        return True, "global"
+
+
+
+    def _populate_per_file_action_panel(self):
+        # clear first (if re-populating)
+        for child in self._file_actions_scroll.winfo_children():
+            child.destroy()
+
+        per_file_cfgs = self._working_per_file_addon_cfgs  # for the "[Custom Config]" badge
+
+        for path in self.file_paths:
+            norm = normalize_path(path)
+
+            # NEW: store vars per file for the view-only addon checkboxes
+            self.addon_check_vars[path] = {}
+
+            # Filename label (badge only if there is at least one custom (non-global) addon config)
+            has_custom = any(
+                (cfg != USE_GLOBAL_SENTINEL) for cfg in (per_file_cfgs.get(norm, {}) or {}).values()
+            )
+            filename_text = os.path.basename(path)
+            if has_custom:
+                filename_text += "  [Custom Config]"
+            ctk.CTkLabel(self._file_actions_scroll, text=filename_text, anchor="w").pack(anchor="w", padx=10, pady=(8, 2))
+
+            # Addon "checkboxes" (disabled, purely informational)
+            inner = ctk.CTkFrame(self._file_actions_scroll)
+            inner.pack(fill="x", padx=25, pady=(0, 6))
+
+            for addon in self.addon_names:
+                applied, source = self._is_addon_applied(norm, addon)  # (bool, 'custom'|'global'|'off')
+                var = tk.BooleanVar(value=applied)
+                self.addon_check_vars[path][addon] = var
+
+                label = addon if source == "off" else f"{addon}  ({source})"
+
+                cb = ctk.CTkCheckBox(inner, text=label, variable=var, state="disabled")
+                cb.pack(anchor="w")
+
+
+
+
+    def _flush_option_vars_to_working(self):
+        # mirror UI -> working dict
+        for raw_path, actions in self.option_vars.items():
+            norm = normalize_path(raw_path)
+            selected = [name for name, var in actions.items() if var.get()]
+            if selected:
+                self._working_file_options[norm] = selected
+            elif norm in self._working_file_options:
+                del self._working_file_options[norm]
+
+    def _on_file_changed_from_basename(self, selected_basename):
+        # set file_var to full path (it currently stores the basename)
+        for p in self.file_paths:
+            if os.path.basename(p) == selected_basename:
+                self.file_var.set(p)
+                break
+        self._refresh_config_display()
+
+    def _refresh_config_display(self):
+        """Refresh the config listbox with current per-file addon configurations."""
+        if not self.config_listbox:
+            return
+        self.config_listbox.delete(0, tk.END)
+
+        current_file = self.file_var.get()
+        if not current_file:
+            return
+
+        norm = normalize_path(current_file)
+        perfile_cfgs = self._working_per_file_addon_cfgs.get(norm, {}) or {}
+        included = set(self._working_addon_inclusions.get(norm, set()))
+
+        # 1) Custom rows (have per-file params)
+        for addon_name, params in perfile_cfgs.items():
+            if addon_name not in included:
+                # stale per-file entry that isn't included anymore; skip showing
+                continue
+            if isinstance(params, dict) and params:
+                param_str = ", ".join(f"{k}={params[k]}" for k in params)
+                self.config_listbox.insert(tk.END, f"{addon_name}: {param_str}")
+            else:
+                # enabled custom with empty dict -> show <enabled>
+                self.config_listbox.insert(tk.END, f"{addon_name}: <enabled> <no params>")
+
+        # 2) Global rows: included but no per-file params
+        for addon_name in sorted(included - set(perfile_cfgs.keys())):
+            self.config_listbox.insert(tk.END, f"{addon_name}: <use global>")
+
+        # 3) Missing rows: present in FileOptions but not installed/loaded
+        missing_for_file = sorted((self._stale_file_actions.get(norm, set()) or set()) - (self._stale_to_remove.get(norm, set()) or set()))
+        for missing_name in missing_for_file:
+            self.config_listbox.insert(tk.END, f"[missing] {missing_name} (not installed)")
+
+
+        # Also refresh the left panel badges
+        self._populate_per_file_action_panel()
+
+
+    # ---------------- ADDON PARAM EDITING ----------------
+
+    def _resolve_addon_obj(self, name_or_filename):
+        return next((a for a in loadedAddons
+                     if a.get("name") == name_or_filename or a.get("filename") == name_or_filename), None)
+
+    def _pick_addon_name_from_listbox_row(self, text):
+        """
+        Robustly parse addon key from a row like:
+           "My Addon: foo=1, bar=true"
+        Handles colons inside addon names by walking prefixes.
+        """
+        parts = text.split(":")
+        for i in range(1, len(parts) + 1):
+            candidate = ":".join(parts[:i]).strip()
+            if any((d.get("name") == candidate) or (d.get("filename") == candidate) for d in loadedAddons):
+                return candidate
+        # fallback to first segment trimmed
+        return parts[0].strip()
+
+    def _add_or_edit_addon_params(self):
+        current_file = self.file_var.get()
+        current_addon = self.addon_var.get().strip()
+
         if not current_file or not current_addon:
             messagebox.showwarning("Selection Required", "Please select both a file and an addon.")
             return
 
-        # Find the addon object to get its parameters
-        addon_obj = next((a for a in loadedAddons if a["name"] == current_addon or a["filename"] == current_addon), None)
-        if not addon_obj or not addon_obj.get("args"):
-            messagebox.showinfo("No Parameters", f"The addon '{current_addon}' has no configurable parameters.")
+        addon_obj = self._resolve_addon_obj(current_addon)
+        if not addon_obj:
+            messagebox.showerror("Unknown Addon", f"Could not find addon '{current_addon}'.")
             return
 
-        norm_path = normalize_path(current_file)
-        existing_config = self.per_file_configs.get(norm_path, {}).get(current_addon, {})
+        args_schema = addon_obj.get("args") or {}
 
-        self.edit_addon_parameters(addon_obj, existing_config, norm_path, current_addon)
+        norm = normalize_path(current_file)
+        existing = (self._working_per_file_addon_cfgs.get(norm, {}) or {}).get(current_addon, {})
+        self._open_param_editor(addon_obj, existing, norm, current_addon)
 
-    def edit_addon_parameters(self, addon_obj, existing_config, file_path, addon_name):
+
+    def _open_param_editor(self, addon_obj, existing_config, norm_path, addon_name):
+        outer_self = self
+
+        # Decide initial mode from working state
+        perfile_cfgs = outer_self._working_per_file_addon_cfgs.get(norm_path, {}) or {}
+        included = addon_name in (outer_self._working_addon_inclusions.get(norm_path, set()))
+
+        if addon_name in perfile_cfgs:
+            initial_mode = "custom"
+        elif included:
+            initial_mode = "global"
+        else:
+            initial_mode = "off"
+
         class ParamEditor(ctk.CTkToplevel):
             def __init__(self):
-                super().__init__()
-                self.title(f"Configure {addon_name} for {os.path.basename(file_path)}")
-                self.geometry("500x400")
+                super().__init__(outer_self)
+                self.title(f"Configure {addon_name} for {os.path.basename(norm_path)}")
+                self.geometry("540x480")
                 self.vars = {}
 
-                # Create parameter controls
-                scroll_frame = ctk.CTkScrollableFrame(self, width=460, height=300)
-                scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+                # --- MODE ROW ---
+                mode_row = ctk.CTkFrame(self)
+                mode_row.pack(fill="x", padx=10, pady=(10, 0))
+                ctk.CTkLabel(mode_row, text="Mode:").pack(side="left", padx=(5, 5))
 
-                for param_name, param_meta in addon_obj["args"].items():
-                    param_type = param_meta.get("type", "str")
-                    default_value = param_meta.get("default", "")
-                    current_value = existing_config.get(param_name, default_value)
+                self.mode_var = tk.StringVar(value=initial_mode)
+                ctk.CTkRadioButton(mode_row, text="Use Global", value="global", variable=self.mode_var).pack(side="left", padx=(10, 0))
+                ctk.CTkRadioButton(mode_row, text="Custom (per-file)", value="custom", variable=self.mode_var).pack(side="left", padx=(10, 0))
+                ctk.CTkRadioButton(mode_row, text="Off", value="off", variable=self.mode_var).pack(side="left", padx=(10, 0))
 
-                    frame = ctk.CTkFrame(scroll_frame)
-                    frame.pack(fill="x", pady=5, padx=5)
+                # --- PARAM SCROLLER ---
+                scroll = ctk.CTkScrollableFrame(self, width=500, height=320)
+                scroll.pack(fill="both", expand=True, padx=10, pady=10)
 
-                    ctk.CTkLabel(frame, text=f"{param_name}:").pack(anchor="w", padx=5)
+                # Build entries for CUSTOM mode (values come from per-file if present; otherwise defaults)
+                for param_name, meta in (addon_obj.get("args") or {}).items():
+                    ptype = meta.get("type", "str")
+                    default = meta.get("default", "")
+                    current = existing_config.get(param_name, default) if isinstance(existing_config, dict) else default
 
-                    if param_type == "bool":
-                        var = tk.BooleanVar(value=bool(current_value) if isinstance(current_value, bool) else str(current_value).lower() in ['true', '1', 'yes'])
-                        cb = ctk.CTkCheckBox(frame, text="", variable=var)
-                        cb.pack(anchor="w", padx=20)
-                    elif param_type == "int":
-                        var = tk.StringVar(value=str(current_value))
-                        entry = ctk.CTkEntry(frame, textvariable=var, placeholder_text="Enter integer")
-                        entry.pack(fill="x", padx=20)
-                    else:  # str
-                        var = tk.StringVar(value=str(current_value))
-                        entry = ctk.CTkEntry(frame, textvariable=var, placeholder_text="Enter text")
-                        entry.pack(fill="x", padx=20)
+                    row = ctk.CTkFrame(scroll)
+                    row.pack(fill="x", padx=5, pady=5)
 
-                    self.vars[param_name] = (var, param_type)
+                    ctk.CTkLabel(row, text=f"{param_name}:").pack(anchor="w", padx=5)
 
-                # Buttons
-                btn_frame = ctk.CTkFrame(self)
-                btn_frame.pack(fill="x", padx=10, pady=10)
+                    if ptype == "bool":
+                        as_bool = current if isinstance(current, bool) else str(current).lower() in ("true", "1", "yes", "on")
+                        var = tk.BooleanVar(value=as_bool)
+                        ctk.CTkCheckBox(row, text="", variable=var).pack(anchor="w", padx=20)
+                    elif ptype == "int":
+                        var = tk.StringVar(value=str(current))
+                        ctk.CTkEntry(row, textvariable=var, placeholder_text="Enter integer").pack(fill="x", padx=20)
+                    else:
+                        var = tk.StringVar(value=str(current))
+                        ctk.CTkEntry(row, textvariable=var, placeholder_text="Enter text").pack(fill="x", padx=20)
 
-                save_btn = ctk.CTkButton(btn_frame, text="Save", command=self.save_params)
-                save_btn.pack(side="right", padx=5)
+                    self.vars[param_name] = (var, ptype)
 
-                cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy)
-                cancel_btn.pack(side="right", padx=(0, 5))
+                btns = ctk.CTkFrame(self)
+                btns.pack(fill="x", padx=10, pady=(0, 10))
+                ctk.CTkButton(btns, text="Save", command=self._save).pack(side="right", padx=5)
+                ctk.CTkButton(btns, text="Cancel", command=self.destroy).pack(side="right")
 
                 self.after(100, lambda: self.focus_force())
                 self.grab_set()
                 self.wait_window()
 
-            def save_params(self):
-                new_config = {}
-                for param_name, (var, param_type) in self.vars.items():
-                    value = var.get()
-                    
-                    # Type conversion
-                    if param_type == "int":
-                        try:
-                            value = int(value)
-                        except ValueError:
-                            messagebox.showerror("Invalid Input", f"'{param_name}' must be an integer.")
-                            return
-                    elif param_type == "bool":
-                        value = bool(value)
-                    # str values remain as-is
-                    
-                    new_config[param_name] = value
+            def _save(self):
+                mode = self.mode_var.get()
 
-                # Update the main configurator's data
-                if file_path not in outer_self.per_file_configs:
-                    outer_self.per_file_configs[file_path] = {}
-                outer_self.per_file_configs[file_path][addon_name] = new_config
-                
-                outer_self.refresh_config_display()
+                # Ensure containers exist
+                outer_self._working_addon_inclusions.setdefault(norm_path, set())
+                outer_self._working_per_file_addon_cfgs.setdefault(norm_path, {})
+
+                if mode == "off":
+                    # Remove inclusion and any per-file config
+                    outer_self._working_addon_inclusions[norm_path].discard(addon_name)
+                    if addon_name in outer_self._working_per_file_addon_cfgs[norm_path]:
+                        del outer_self._working_per_file_addon_cfgs[norm_path][addon_name]
+                    if not outer_self._working_per_file_addon_cfgs[norm_path]:
+                        del outer_self._working_per_file_addon_cfgs[norm_path]
+                    outer_self._refresh_config_display()
+                    self.destroy()
+                    return
+
+                if mode == "global":
+                    # Included, but no per-file config
+                    outer_self._working_addon_inclusions[norm_path].add(addon_name)
+                    if addon_name in (outer_self._working_per_file_addon_cfgs.get(norm_path, {}) or {}):
+                        del outer_self._working_per_file_addon_cfgs[norm_path][addon_name]
+                        if not outer_self._working_per_file_addon_cfgs[norm_path]:
+                            del outer_self._working_per_file_addon_cfgs[norm_path]
+                    outer_self._refresh_config_display()
+                    self.destroy()
+                    return
+
+                # mode == "custom"
+                new_cfg = {}
+                for pname, (var, ptype) in self.vars.items():
+                    val = var.get()
+                    if ptype == "int":
+                        try:
+                            val = int(val)
+                        except ValueError:
+                            messagebox.showerror("Invalid Input", f"'{pname}' must be an integer.")
+                            return
+                    elif ptype == "bool":
+                        val = bool(val)
+                    new_cfg[pname] = val
+
+                outer_self._working_addon_inclusions[norm_path].add(addon_name)
+                outer_self._working_per_file_addon_cfgs.setdefault(norm_path, {})[addon_name] = new_cfg
+                outer_self._refresh_config_display()
+
                 self.destroy()
 
-        outer_self = self
         ParamEditor()
 
-    def edit_selected_config(self):
-        selection = self.config_listbox.curselection()
-        if not selection:
+
+    # NEW: return sorted list of addons effectively applied to a file
+    def _effective_addons_for(self, norm):
+        """Return the (sorted) addons applied to this file for save-time composition."""
+        return sorted(self._working_addon_inclusions.get(norm, set()))
+
+
+
+
+    def _edit_selected_config(self):
+        sel = self.config_listbox.curselection()
+        if not sel:
             messagebox.showwarning("No Selection", "Please select a configuration to edit.")
             return
 
-        selected_text = self.config_listbox.get(selection[0])
-        # Parse the format: "addon_name: param1=val1, param2=val2"
-        if ":" not in selected_text:
+        row_text = self.config_listbox.get(sel[0])
+        addon_name = self._pick_addon_name_from_listbox_row(row_text)
+
+        current_file = self.file_var.get()
+        norm = normalize_path(current_file)
+        addon_obj = self._resolve_addon_obj(addon_name)
+        if not addon_obj:
+            messagebox.showerror("Unknown Addon", f"Could not find addon '{addon_name}'.")
             return
 
-        addon_name = selected_text.split(":")[0].strip()
-        print(loadedAddons)
-        for i in range(1, len(selected_text.split(":")) + 1):
-            candidate_key = ":".join(selected_text.split(":")[:i]).strip()
-            print(candidate_key)
-            print(f"test funct: {candidate_key in loadedAddons}")
-            if any(d["name"] == candidate_key for d in loadedAddons):
-                addon_name = candidate_key
-                break
-        current_file = self.file_var.get()
-        
-        # Find addon object and edit
-        addon_obj = next((a for a in loadedAddons if a["name"] == addon_name or a["filename"] == addon_name), None)
-        if addon_obj:
-            norm_path = normalize_path(current_file)
-            existing_config = self.per_file_configs.get(norm_path, {}).get(addon_name, {})
-            self.edit_addon_parameters(addon_obj, existing_config, norm_path, addon_name)
+        existing = (self._working_per_file_addon_cfgs.get(norm, {}) or {}).get(addon_name, {})
+        self._open_param_editor(addon_obj, existing, norm, addon_name)
 
-    def remove_selected_config(self):
-        selection = self.config_listbox.curselection()
-        if not selection:
-            messagebox.showwarning("No Selection", "Please select a configuration to remove.")
+    def _remove_selected_config(self):
+        """Remove the selected row from the current file's configuration.
+        Supports:
+          - Custom per-file addon config rows: 'Addon: k=v, ...'  -> remove per-file config (keeps inclusion if any)
+          - Global rows: 'Addon: <use global>'                     -> remove inclusion (effectively 'off' for that file)
+          - Missing rows: '[missing] AddonName (not installed)'    -> mark stale addon for removal from FileOptions on Save
+        """
+        if not self.config_listbox:
             return
 
-        selected_text = self.config_listbox.get(selection[0])
-        addon_name = selected_text.split(":")[0].strip()
-        for i in range(1, len(selected_text.split(":")) + 1):
-            candidate_key = ":".join(selected_text.split(":")[:i]).strip()
-            print(candidate_key)
-            print(f"test funct: {candidate_key in loadedAddons}")
-            if any(d["name"] == candidate_key for d in loadedAddons):
-                addon_name = candidate_key
-                break
-        current_file = self.file_var.get()
-        norm_path = normalize_path(current_file)
+        sel = self.config_listbox.curselection()
+        if not sel:
+            messagebox.showinfo("No Selection", "Please select a configuration row to remove.")
+            return
 
-        print(self.per_file_configs[norm_path][addon_name])
-
-        if norm_path in self.per_file_configs and addon_name in self.per_file_configs[norm_path]:
-            del self.per_file_configs[norm_path][addon_name]
-            if not self.per_file_configs[norm_path]:
-                del self.per_file_configs[norm_path]
-            self.refresh_config_display()
-
-    def refresh_config_display(self):
-        self.config_listbox.delete(0, tk.END)
+        row_text = self.config_listbox.get(sel[0])
         current_file = self.file_var.get()
         if not current_file:
             return
 
-        norm_path = normalize_path(current_file)
-        configs = self.per_file_configs.get(norm_path, {})
+        norm = normalize_path(current_file)
 
-        for addon_name, params in configs.items():
-            param_str = ", ".join(f"{k}={v}" for k, v in params.items())
-            display_text = f"{addon_name}: {param_str}"
-            self.config_listbox.insert(tk.END, display_text)
+        # Handle [missing] rows first
+        if row_text.startswith("[missing]"):
+            # Expected format: "[missing] <name> (not installed)"
+            try:
+                # Extract the addon name between '[missing] ' and ' (not installed)'
+                core = row_text[len("[missing] "):]
+                missing_name = core.rsplit(" (not installed)", 1)[0].strip()
+            except Exception:
+                messagebox.showerror("Parse Error", f"Could not parse missing addon from row:\n{row_text}")
+                return
 
-    def save_configs(self):
-        # Update global config
+            # Mark it for removal at Save time; drop from UI immediately
+            self._stale_to_remove.setdefault(norm, set()).add(missing_name)
+            self._refresh_config_display()
+            return
+
+        # Otherwise, it's a known addon row. Derive addon name robustly.
+        addon_name = self._pick_addon_name_from_listbox_row(row_text)
+        if not addon_name:
+            messagebox.showerror("Parse Error", f"Could not derive addon name from row:\n{row_text}")
+            return
+
+        # Determine which category this row represents
+        perfile_cfgs = self._working_per_file_addon_cfgs.get(norm, {}) or {}
+        included = set(self._working_addon_inclusions.get(norm, set()))
+
+        is_custom = (addon_name in perfile_cfgs)
+        is_global = (addon_name in included) and not is_custom
+
+        if is_custom:
+            # Remove the per-file parameters (fallback to <use global> if still included)
+            try:
+                del perfile_cfgs[addon_name]
+                if not perfile_cfgs:
+                    # Clean empty dicts
+                    self._working_per_file_addon_cfgs.pop(norm, None)
+            except KeyError:
+                pass
+            self._refresh_config_display()
+            return
+
+        if is_global:
+            # Remove the inclusion to turn it fully 'off' for this file
+            self._working_addon_inclusions.setdefault(norm, set()).discard(addon_name)
+            # Also ensure no stale per-file cfg lingers
+            if norm in self._working_per_file_addon_cfgs and addon_name in self._working_per_file_addon_cfgs[norm]:
+                del self._working_per_file_addon_cfgs[norm][addon_name]
+                if not self._working_per_file_addon_cfgs[norm]:
+                    self._working_per_file_addon_cfgs.pop(norm, None)
+            self._refresh_config_display()
+            return
+
+        # If it falls through, do nothing but warn
+        messagebox.showwarning("Nothing to remove", "This row doesn't map to a removable configuration.")
+
+
+
+    # ---------------- SAVE ----------------
+
+    def _save_all(self):
+        # persist FILE_ACTIONS selections
+        if "FileOptions" not in currentConfig:
+            currentConfig["FileOptions"] = {}
+
+        # mirror latest UI into working dict first
+        self._flush_option_vars_to_working()
+
+        # NEW: defensively purge stale/missing names from the working lists
+        for norm in self.norm_paths:
+            to_remove = self._stale_to_remove.get(norm, set()) or set()
+            if not to_remove:
+                continue
+            if norm in self._working_file_options:
+                self._working_file_options[norm] = [
+                    a for a in self._working_file_options[norm] if a not in to_remove
+                ]
+                if not self._working_file_options[norm]:
+                    self._working_file_options.pop(norm, None)
+
+        # write file options (same as you have today)
+        for norm in self.norm_paths:
+            if norm in self._working_file_options and self._working_file_options[norm]:
+                currentConfig["FileOptions"][norm] = list(self._working_file_options[norm])
+            else:
+                if norm in currentConfig["FileOptions"]:
+                    del currentConfig["FileOptions"][norm]
+
+        # persist per-file addon configs (modes and params)
         if "PerFileAddonConfigs" not in currentConfig:
             currentConfig["PerFileAddonConfigs"] = {}
 
-        print(self.per_file_configs.items())
-        
-        for file_path, configs in self.per_file_configs.items():
-            print(f"file_path = {file_path}, configs = {configs}")
-            if configs:  # Only save non-empty configs
-                currentConfig["PerFileAddonConfigs"][file_path] = configs
-                print("is configs")
-            elif file_path in currentConfig["PerFileAddonConfigs"]:
-                # Remove empty configs
-                print("no configs")
-                del currentConfig["PerFileAddonConfigs"][file_path]
-        if not self.per_file_configs.items():
-            del currentConfig["PerFileAddonConfigs"][normalize_path(self.file_var.get())]
+        for norm in self.norm_paths:
+            included = set(self._working_addon_inclusions.get(norm, set()))
+            per_addon = self._working_per_file_addon_cfgs.get(norm, {})
+
+            if included and per_addon:
+                filtered = {an: dict(cfg) for an, cfg in per_addon.items()
+                            if an in included and isinstance(cfg, dict)}
+                if filtered:
+                    currentConfig["PerFileAddonConfigs"][norm] = filtered
+                else:
+                    currentConfig["PerFileAddonConfigs"].pop(norm, None)
+            else:
+                currentConfig["PerFileAddonConfigs"].pop(norm, None)
+
+        # --- finally, build FileOptions = (non-addon actions) + (included addon names) ---
+        for norm in self.norm_paths:
+            existing_actions = list(currentConfig.get("FileOptions", {}).get(norm, []))
+            non_addon_actions = [a for a in existing_actions if a not in self.addon_names]
+            effective_addons = self._effective_addons_for(norm)  # already sorted
+
+            combined = list(dict.fromkeys([*non_addon_actions, *effective_addons]))
+            print(f"{utils.Fore.CYAN}combined = {combined}{utils.Fore.RESET}")
+
+            currentConfig.setdefault("FileOptions", {})
+            if combined:
+                currentConfig["FileOptions"][norm] = combined
+            else:
+                currentConfig["FileOptions"].pop(norm, None)
 
         write_config()
         self.destroy()
+
+
+
+def OptionSelector(inner_self, file_paths):
+    PerFileAddonConfigurator(parent=inner_self, file_paths=file_paths)
+
 
 
 class CTkTooltip:
@@ -2076,102 +3013,102 @@ class CTkYesNoDialog(customtkinter.CTkToplevel):
 
 
 
-def OptionSelector(file_paths):
-    class OptWin(ctk.CTkToplevel):
-        def __init__(self):
-            super().__init__()
-            self.title("File Options")
-            self.geometry("580x680")  # Slightly wider
-            self.option_vars = {}
-            self.global_option_vars = {opt: tk.BooleanVar() for opt in FILE_ACTIONS}
+# def OptionSelector(file_paths):
+#     class OptWin(ctk.CTkToplevel):
+#         def __init__(self):
+#             super().__init__()
+#             self.title("File Options")
+#             self.geometry("580x680")  # Slightly wider
+#             self.option_vars = {}
+#             self.global_option_vars = {opt: tk.BooleanVar() for opt in FILE_ACTIONS}
 
-            self.grid_rowconfigure(0, weight=1)
-            self.grid_columnconfigure(0, weight=1)
+#             self.grid_rowconfigure(0, weight=1)
+#             self.grid_columnconfigure(0, weight=1)
 
-            top_frame = ctk.CTkFrame(self)
-            top_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+#             top_frame = ctk.CTkFrame(self)
+#             top_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
-            ctk.CTkLabel(top_frame, text="Apply Actions to All Files").pack(pady=(5, 0))
-            global_frame = ctk.CTkFrame(top_frame)
-            global_frame.pack(fill="x", pady=(0, 5))
+#             ctk.CTkLabel(top_frame, text="Apply Actions to All Files").pack(pady=(5, 0))
+#             global_frame = ctk.CTkFrame(top_frame)
+#             global_frame.pack(fill="x", pady=(0, 5))
 
-            for opt in FILE_ACTIONS:
-                cb = ctk.CTkCheckBox(global_frame, text=opt, variable=self.global_option_vars[opt])
-                cb.pack(anchor="w", padx=10)
+#             for opt in FILE_ACTIONS:
+#                 cb = ctk.CTkCheckBox(global_frame, text=opt, variable=self.global_option_vars[opt])
+#                 cb.pack(anchor="w", padx=10)
 
-            apply_all_btn = ctk.CTkButton(top_frame, text="Apply to All Selected Files", command=self.set_for_all)
-            apply_all_btn.pack(pady=(5, 5))
+#             apply_all_btn = ctk.CTkButton(top_frame, text="Apply to All Selected Files", command=self.set_for_all)
+#             apply_all_btn.pack(pady=(5, 5))
 
-            # NEW: Per-file configuration button
-            per_file_btn = ctk.CTkButton(
-                top_frame, 
-                text="Configure Per-File Addon Settings", 
-                command=self.open_per_file_configurator,
-                fg_color="#4a4a4a"
-            )
-            per_file_btn.pack(pady=(0, 10))
+#             # NEW: Per-file configuration button
+#             per_file_btn = ctk.CTkButton(
+#                 top_frame, 
+#                 text="Configure Per-File Addon Settings", 
+#                 command=self.open_per_file_configurator,
+#                 fg_color="#4a4a4a"
+#             )
+#             per_file_btn.pack(pady=(0, 10))
 
-            ctk.CTkLabel(top_frame, text="Edit Actions Individually").pack(pady=(0, 5))
+#             ctk.CTkLabel(top_frame, text="Edit Actions Individually").pack(pady=(0, 5))
 
-            scroll_frame = ctk.CTkScrollableFrame(top_frame, width=520, height=350)
-            scroll_frame.pack(fill="both", expand=True, pady=(0, 10))
+#             scroll_frame = ctk.CTkScrollableFrame(top_frame, width=520, height=350)
+#             scroll_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-            per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
+#             per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
             
-            for path in file_paths:
-                self.option_vars[path] = {opt: tk.BooleanVar() for opt in FILE_ACTIONS}
+#             for path in file_paths:
+#                 self.option_vars[path] = {opt: tk.BooleanVar() for opt in FILE_ACTIONS}
 
-                # Show filename with indicator
-                norm_path = normalize_path(path)
-                filename_text = os.path.basename(path)
-                if norm_path in per_file_configs:
-                    filename_text += " [Custom Config]"
+#                 # Show filename with indicator
+#                 norm_path = normalize_path(path)
+#                 filename_text = os.path.basename(path)
+#                 if norm_path in per_file_configs:
+#                     filename_text += " [Custom Config]"
                     
-                ctk.CTkLabel(scroll_frame, text=filename_text, anchor="w").pack(anchor="w", padx=10, pady=(5, 0))
+#                 ctk.CTkLabel(scroll_frame, text=filename_text, anchor="w").pack(anchor="w", padx=10, pady=(5, 0))
                 
-                for opt in FILE_ACTIONS:
-                    cb = ctk.CTkCheckBox(scroll_frame, text=opt, variable=self.option_vars[path][opt])
-                    cb.pack(anchor="w", padx=30)
+#                 for opt in FILE_ACTIONS:
+#                     cb = ctk.CTkCheckBox(scroll_frame, text=opt, variable=self.option_vars[path][opt])
+#                     cb.pack(anchor="w", padx=30)
 
-            bottom_frame = ctk.CTkFrame(self)
-            bottom_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-            bottom_frame.grid_columnconfigure(0, weight=1)
+#             bottom_frame = ctk.CTkFrame(self)
+#             bottom_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+#             bottom_frame.grid_columnconfigure(0, weight=1)
 
-            save_btn = ctk.CTkButton(bottom_frame, text="Save Options", command=self.save_and_close)
-            save_btn.grid(row=0, column=0, sticky="e")
+#             save_btn = ctk.CTkButton(bottom_frame, text="Save Options", command=self.save_and_close)
+#             save_btn.grid(row=0, column=0, sticky="e")
 
-            self.grab_set()
-            self.after(100, lambda: self.focus_force())
-            self.wait_window()
+#             self.grab_set()
+#             self.after(100, lambda: self.focus_force())
+#             self.wait_window()
 
-        def open_per_file_configurator(self):
-            files = [p for p in file_paths if os.path.isfile(p)]
-            if not files:
-                messagebox.showwarning("No Files", "No files selected for per-file configuration.")
-                return
-            PerFileAddonConfigurator(self, files)
+#         def open_per_file_configurator(self):
+#             files = [p for p in file_paths if os.path.isfile(p)]
+#             if not files:
+#                 messagebox.showwarning("No Files", "No files selected for per-file configuration.")
+#                 return
+#             PerFileAddonConfigurator(self, files)
 
-        def set_for_all(self):
-            for path_vars in self.option_vars.values():
-                for opt, var in path_vars.items():
-                    var.set(self.global_option_vars[opt].get())
+#         def set_for_all(self):
+#             for path_vars in self.option_vars.values():
+#                 for opt, var in path_vars.items():
+#                     var.set(self.global_option_vars[opt].get())
 
-        def save_and_close(self):
-            if "FileOptions" not in currentConfig:
-                currentConfig["FileOptions"] = {}
+#         def save_and_close(self):
+#             if "FileOptions" not in currentConfig:
+#                 currentConfig["FileOptions"] = {}
 
-            for path, opts in self.option_vars.items():
-                selected = [name for name, var in opts.items() if var.get()]
-                norm_path = normalize_path(path)
-                if selected:
-                    currentConfig["FileOptions"][norm_path] = selected
-                elif norm_path in currentConfig["FileOptions"]:
-                    del currentConfig["FileOptions"][norm_path]
+#             for path, opts in self.option_vars.items():
+#                 selected = [name for name, var in opts.items() if var.get()]
+#                 norm_path = normalize_path(path)
+#                 if selected:
+#                     currentConfig["FileOptions"][norm_path] = selected
+#                 elif norm_path in currentConfig["FileOptions"]:
+#                     del currentConfig["FileOptions"][norm_path]
 
-            write_config()
-            self.destroy()
+#             write_config()
+#             self.destroy()
 
-    OptWin()
+#     OptWin()
 
 def validate_per_file_configs():
     """Clean up orphaned per-file configurations"""
@@ -2681,7 +3618,7 @@ class FileCopyApp(ctk.CTk):
                     
                     if files or folders:
                         
-                        OptionSelector(files + folders)
+                        OptionSelector(inner_self, files + folders)
                         ask_file_destinations(files + folders)
                     
                     
@@ -2828,20 +3765,20 @@ class FileCopyApp(ctk.CTk):
                 actDestination = f"{actDestination}/{'/'.join(newfolderpath[:-1])}"
 
             file_options = currentConfig.get("FileOptions", {})
-            print("\n\n")
+            #print("\n\n")
             per_file_configs = currentConfig.get("PerFileAddonConfigs", {})
-            print(f"{utils.Fore.CYAN}per_file_configs = {per_file_configs}{utils.Fore.RESET}")
-            print(f"{utils.Fore.YELLOW}norm_path.lower() = {norm_path.lower()}{utils.Fore.RESET}")
+            #print(f"{utils.Fore.CYAN}per_file_configs = {per_file_configs}{utils.Fore.RESET}")
+            #print(f"{utils.Fore.YELLOW}norm_path.lower() = {norm_path.lower()}{utils.Fore.RESET}")
             
             if (norm_path.lower() in file_options) or (norm_path.lower() in per_file_configs.get(normalize_path(path), {})):
-                print(f"{utils.Fore.RED}Did run{utils.Fore.RESET}")
+                #print(f"{utils.Fore.RED}Did run{utils.Fore.RESET}")
                 new_path = shutil.copy2(path, actDestination)
                 filecontent = None
                 
                 # Get per-file addon configurations for this specific file
                 norm_file_path = normalize_path(path)
                 file_specific_configs = per_file_configs.get(norm_file_path, {})
-                print(f"{utils.Fore.MAGENTA}file_specific_configs = {file_specific_configs}{utils.Fore.RESET}")
+                #print(f"{utils.Fore.MAGENTA}file_specific_configs = {file_specific_configs}{utils.Fore.RESET}")
 
                 for priority_level in range(5):
                     for action_name in file_options[norm_path]:
@@ -2853,16 +3790,16 @@ class FileCopyApp(ctk.CTk):
                                 # Use per-file config if available, otherwise use global addon config
                                 norm_file_path_in_file_specific_configs = utils.Fore.GREEN if norm_file_path in per_file_configs else utils.Fore.RED
                                 action_name_in_file_specific_configs = utils.Fore.GREEN if action_name in file_specific_configs else utils.Fore.RED
-                                print(f"{utils.Fore.YELLOW}if {norm_file_path_in_file_specific_configs}norm_file_path in per_file_configs {utils.Fore.YELLOW}and {action_name_in_file_specific_configs}action_name in file_specific_configs{utils.Fore.YELLOW}:{utils.Fore.RESET}")
+                                #print(f"{utils.Fore.YELLOW}if {norm_file_path_in_file_specific_configs}norm_file_path in per_file_configs {utils.Fore.YELLOW}and {action_name_in_file_specific_configs}action_name in file_specific_configs{utils.Fore.YELLOW}:{utils.Fore.RESET}")
                                 if norm_file_path in per_file_configs and action_name in file_specific_configs:
-                                    print(f"{utils.Fore.CYAN}Custom Configs{utils.Fore.RESET}")
+                                    #print(f"{utils.Fore.CYAN}Custom Configs{utils.Fore.RESET}")
                                     # Use file-specific configuration
                                     #custom_args = file_specific_configs[action_name]
-                                    print(f"{utils.Fore.BLUE}**addon_obj['argsValues'] = {addon_obj["argsValues"]}{utils.Fore.RESET}")
-                                    print(f"{utils.Fore.LIGHTMAGENTA_EX}'{new_path}' custom_args = {file_specific_configs[action_name]}{utils.Fore.RESET}")
+                                    #print(f"{utils.Fore.BLUE}**addon_obj['argsValues'] = {addon_obj["argsValues"]}{utils.Fore.RESET}")
+                                    #print(f"{utils.Fore.LIGHTMAGENTA_EX}'{new_path}' custom_args = {file_specific_configs[action_name]}{utils.Fore.RESET}")
                                     filecontent = actionFunc(new_path, filecontent, **file_specific_configs[action_name])
                                 elif addon_obj and "argsValues" in addon_obj:
-                                    print(f"{utils.Fore.BLUE}Global config{utils.Fore.RESET}")
+                                    #print(f"{utils.Fore.BLUE}Global config{utils.Fore.RESET}")
                                     # Use global addon configuration
                                     filecontent = actionFunc(new_path, filecontent, **addon_obj["argsValues"])
                                 else:
@@ -2884,7 +3821,7 @@ class FileCopyApp(ctk.CTk):
 
             else:
 
-                print(f"{utils.Fore.YELLOW}Did NOTTTT run{utils.Fore.RESET}")
+                #print(f"{utils.Fore.YELLOW}Did NOTTTT run{utils.Fore.RESET}")
                 try:
                     shutil.copy2(path, actDestination)
                 except PermissionError as e:
@@ -2990,6 +3927,9 @@ class FileCopyApp(ctk.CTk):
 
                 inner_self.tree.pack(fill="both", expand=True, padx=10, pady=10)
 
+                inner_self.bind("<<PerFileAddonConfigsUpdated>>", lambda e: refresh_treeview())
+
+
 
 
 
@@ -3070,8 +4010,35 @@ class FileCopyApp(ctk.CTk):
                         # # Attach tooltip to the Treeview widget itself
                         # CTkTooltip(inner_self.tree.item(last_item_id.widget), path)
                         
+                
+
 
                 create_rows(inner_self)
+
+                def refresh_treeview():
+                    # Clear all rows
+                    inner_self.tree.delete(*inner_self.tree.get_children())
+
+                    # Pull fresh data
+                    files, folders, destination = copy.deepcopy(get_saved_paths())
+
+                    # Filter out empties
+                    files = [f for f in files if f.strip()]
+                    folders = [f for f in folders if f.strip()]
+                    destination = [f for f in destination if f.strip()]
+
+                    # Rebuild the rows list
+                    rows = []
+                    if files:
+                        rows += [["file", f] for f in files]
+                    if folders:
+                        rows += [["folder", f] for f in folders]
+                    if destination:
+                        rows += [["destination", f] for f in destination]
+                    inner_self.rows = rows
+
+                    # Recreate rows in the Treeview
+                    create_rows(inner_self)
 
 
 
@@ -3215,6 +4182,7 @@ class FileCopyApp(ctk.CTk):
 
                             write_config()
                             self.destroy()
+                            create_rows(inner_self)  # Refresh treeview with updated actions
 
 
                     MultiActionEditor()
@@ -3222,76 +4190,8 @@ class FileCopyApp(ctk.CTk):
                 
 
                 def edit_destinations():
-                    def refresh_treeview(inner_self):
-                        for item in inner_self.tree.get_children():
-                            inner_self.tree.delete(item)
+                    
 
-                        files, folders, destination = copy.deepcopy(get_saved_paths())
-                        files = [f for f in files if f.strip()]
-                        folders = [f for f in folders if f.strip()]
-                        destination = [f for f in destination if f.strip()]
-                        rows = []
-
-                        if files:
-                            rows += [["file", f] for f in files]
-                        if folders:
-                            rows += [["folder", f] for f in folders]
-                        if destination:
-                            rows += [["destination", f] for f in destination]
-
-                        inner_self.rows = rows
-
-                        create_rows(inner_self)
-
-                        # for row in inner_self.rows:
-
-                        #     type_, path = row
-                        #     if type_ == "file":
-                        #         actions = ",".join(currentConfig.get("FileOptions", {}).get(path.lower(), []))
-                        #     else:
-                        #         actions = ""
-
-                        #     tags = ()
-
-                        #     # Normalize path
-                        #     norm_path = normalize_path(path)
-
-                        #     if type_ in ("file", "folder"):
-                        #         destinations = currentConfig["Paths"].get("file_dest_map", {}).get(norm_path)
-                        #         if not destinations:
-                        #             destinations = currentConfig["Paths"].get("destination", [])
-                        #         dest_display = ", ".join(destinations) if destinations else "—"
-                        #     else:
-                        #         dest_display = "—"
-
-                        #     # Check if it's a file or folder and missing destination
-                        #     if type_ in ("file", "folder"):
-                        #         # Check global destination list (if none at all)
-                        #         global_dests = currentConfig["Paths"].get("destination", [])
-
-                        #         # Check per-file destination map
-                        #         per_file_dests = currentConfig["Paths"].get("file_dest_map", {}).get(norm_path, [])
-
-                        #         if not global_dests or not per_file_dests or (per_file_dests[0] == ""):
-                        #             print(f"path not in destinations..?")
-                        #             tags = ("no_dest",)
-
-                        #     inner_self.tree.insert("", "end", values=(type_, path, actions, dest_display), tags=tags)
-                            
-                            # type_, path = row
-                            # if type_ == "file":
-                            #     actions = ",".join(currentConfig.get("FileOptions", {}).get(path.lower(), []))
-                            # else:
-                            #     actions = ""
-
-                            # tags = ()
-                            # norm_path = normalize_path(path)
-                            # global_dests = currentConfig["Paths"].get("destination", [])
-                            # per_file_dests = currentConfig["Paths"].get("file_dest_map", {}).get(norm_path, [])
-                            # if type_ in ("file", "folder") and (not global_dests or not per_file_dests or (per_file_dests[0] == "")):
-                            #     tags = ("no_dest",)
-
-                            # inner_self.tree.insert("", "end", values=(type_, path, actions), tags=tags)
 
 
 
@@ -3310,7 +4210,7 @@ class FileCopyApp(ctk.CTk):
 
                     if selected_files:
                         DestinationManager(self, assign_to_file=selected_files)
-                        refresh_treeview(inner_self=inner_self)
+                        refresh_treeview()
 
                     
                 # ADD this method to your ManageWindow class:
@@ -3330,7 +4230,22 @@ class FileCopyApp(ctk.CTk):
                         messagebox.showwarning("No Selection", "Please select one or more files to configure per-file addon settings.")
                         return
 
-                    PerFileAddonConfigurator(inner_self, selected_files)
+                    # Open the configurator. It should call event_generate on save/close.
+                    win = PerFileAddonConfigurator(inner_self, selected_files)
+
+
+                    # If your configurator is a CTkToplevel and you want to be extra sure we refresh
+                    # *after* it closes, you can also do:
+                    try:
+                        inner_self.wait_window(win)  # No-op if 'win' isn't a widget
+                    except Exception:
+                        pass
+                    # If the configurator fired the virtual event, the bound handler already refreshed.
+                    # The 'wait_window' is just a harmless extra belt-and-suspenders.
+
+                    inner_self.event_generate("<<PerFileAddonConfigsUpdated>>", when="tail")
+
+                    
 
                 
                 info_label = ctk.CTkLabel(
@@ -3378,15 +4293,15 @@ class FileCopyApp(ctk.CTk):
 
                 del_btn = ctk.CTkButton(btn_frame, text="Delete Selected", command=delete_selected)
                 del_btn.pack(side="left", padx=10)
-                modify_btn = ctk.CTkButton(btn_frame, text="Modify Actions", command=modify_actions)
+                modify_btn = ctk.CTkButton(btn_frame, text="Modify Actions", command=configure_per_file_addons) #modify_actions
                 modify_btn.pack(side="left", padx=10)
                 save_btn = ctk.CTkButton(btn_frame, text="Save and Close", command=save_changes)
                 save_btn.pack(side="left", padx=10)
                 edit_dest_btn = ctk.CTkButton(btn_frame, text="Edit Destination", command=edit_destinations)
                 edit_dest_btn.pack(side="left", padx=10)
-                configure_addon_btn = ctk.CTkButton(btn_frame, text="Configure Per-File Addons", 
-                                   command=configure_per_file_addons)
-                configure_addon_btn.pack(side="left", padx=10)
+                # configure_addon_btn = ctk.CTkButton(btn_frame, text="Configure Per-File Addons", 
+                #                    command=configure_per_file_addons)
+                # configure_addon_btn.pack(side="left", padx=10)
                 inner_self.after(100, lambda: inner_self.focus_force())
                 inner_self.grab_set()
                 inner_self.wait_window()
@@ -3431,48 +4346,96 @@ class FileCopyApp(ctk.CTk):
                 inner_self.wait_window()
 
             def edit_parameters(inner_self, addon):
+                # Ensure argsValues exists to store edited values
+                addon.setdefault("argsValues", {})
+
                 class ParamEditor(ctk.CTkToplevel):
                     def __init__(self):
-                        super().__init__()
+                        # Parent this to the AddonManager window
+                        super().__init__(inner_self)
                         self.title(f"Edit Parameters for {addon['name']}")
-                        self.geometry("400x400")
+                        self.geometry("520x520")          # reasonable default size
+                        self.minsize(400, 300)            # don't let it get too tiny
+                        self.transient(inner_self)        # stay on top of parent
                         self.vars = {}
 
+                        # --- Layout: scrollable content + fixed bottom bar ---
+                        content = ctk.CTkFrame(self)
+                        content.pack(fill="both", expand=True)
+
+                        self.scroll = ctk.CTkScrollableFrame(content)
+                        self.scroll.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+
+                        # 2-column grid inside the scroll area: label | input
+                        self.scroll.grid_columnconfigure(0, weight=0)  # label
+                        self.scroll.grid_columnconfigure(1, weight=1)  # control expands
+
+                        row = 0
                         for k, meta in addon["args"].items():
                             default = addon["argsValues"].get(k, meta.get("default"))
-                            var_type = meta.get("type", "str")
+                            vtype = (meta.get("type") or "str").lower()
 
-                            frame = ctk.CTkFrame(self)
-                            frame.pack(fill="x", pady=5, padx=10)
-                            ctk.CTkLabel(frame, text=k).pack(side="left")
+                            # Label
+                            label = ctk.CTkLabel(self.scroll, text=str(k))
+                            label.grid(row=row, column=0, sticky="w", padx=(4, 8), pady=4)
 
-                            if var_type == "bool":
-                                var = tk.BooleanVar(value=default)
-                                cb = ctk.CTkCheckBox(frame, text="", variable=var)
-                                cb.pack(side="right")
+                            # Control
+                            if vtype == "bool":
+                                var = tk.BooleanVar(value=bool(default))
+                                ctrl = ctk.CTkSwitch(self.scroll, text="", variable=var)  # nicer than checkbox for on/off
                             else:
-                                var = tk.StringVar(value=str(default))
-                                entry = ctk.CTkEntry(frame, textvariable=var)
-                                entry.pack(side="right", padx=(5, 0))
+                                var = tk.StringVar(value="" if default is None else str(default))
+                                entry_width = meta.get("width", 220)
+                                ctrl = ctk.CTkEntry(self.scroll, textvariable=var, width=entry_width)
 
-                            self.vars[k] = var
+                            ctrl.grid(row=row, column=1, sticky="ew", padx=(0, 4), pady=4)
 
-                        save_btn = ctk.CTkButton(self, text="Save", command=self.save_args)
-                        save_btn.pack(pady=10)
+                            # Save tuple so we know how to coerce later
+                            self.vars[k] = (var, vtype, meta)
+                            row += 1
 
-                        self.after(100, lambda: self.focus_force())
+                        # Bottom bar stays visible even when you scroll
+                        btnbar = ctk.CTkFrame(self)
+                        btnbar.pack(fill="x", padx=10, pady=10)
+
+                        cancel_btn = ctk.CTkButton(btnbar, text="Cancel", command=self.destroy)
+                        cancel_btn.pack(side="right", padx=(0, 8))
+
+                        save_btn = ctk.CTkButton(btnbar, text="Save", command=self.save_args)
+                        save_btn.pack(side="right")
+
+                        # Usability polish
+                        self.after(100, self.focus_force)
                         self.grab_set()
                         self.wait_window()
 
+                    def _coerce_value(self, value, vtype, meta):
+                        # Turn widget values into the types your addon expects
+                        if vtype == "bool":
+                            # value is already a real bool from BooleanVar
+                            return bool(value)
+                        if vtype == "int":
+                            # allow "3" or "3.0"
+                            try:
+                                return int(value)
+                            except Exception:
+                                return int(float(value))
+                        if vtype == "float":
+                            return float(value)
+                        if vtype in ("list", "array"):
+                            sep = meta.get("sep", ",")
+                            return [s.strip() for s in str(value).split(sep)]
+                        # default to string
+                        return str(value)
+
                     def save_args(self):
-                        for k, var in self.vars.items():
-                            v = var.get()
-                            if addon["args"][k]["type"] == "bool":
-                                v = bool(int(v)) if isinstance(v, str) else bool(v)
-                            addon["argsValues"][k] = v
+                        for k, (var, vtype, meta) in self.vars.items():
+                            raw = var.get()
+                            addon["argsValues"][k] = self._coerce_value(raw, vtype, meta)
                         self.destroy()
 
                 ParamEditor()
+
 
             def populate_addon_list(inner_self):
                 for widget in inner_self.scroll_frame.winfo_children():

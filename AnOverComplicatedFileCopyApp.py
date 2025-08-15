@@ -1008,6 +1008,7 @@ def main_addon_function(filepath, content=None, encoding="utf-8", print_output_i
 ''',
 
     "Builtin_Addon_PIL_Image_Processor.py": r'''
+
 from io import BytesIO
 
 # Display name of addon in app.
@@ -1033,7 +1034,7 @@ customArguments = {
     "crop_top_px":    {"type": "int", "default": "0"},
     "crop_right_px":  {"type": "int", "default": "0"},
     "crop_bottom_px": {"type": "int", "default": "0"},
-    # crop_percent trims % of width/height from each edge (0–100, floats ok)
+    # crop_percent trims % of width/height from each edge (0-100, floats ok)
     "crop_left_pct":   {"type": "float", "default": "0.0"},
     "crop_top_pct":    {"type": "float", "default": "0.0"},
     "crop_right_pct":  {"type": "float", "default": "0.0"},
@@ -1059,11 +1060,11 @@ customArguments = {
     "colorize_white":   {"type": "str",  "default": "#FFFFFF"},
     "colorize_mid":     {"type": "str",  "default": ""},   # optional mid color
     "enable_sepia":     {"type": "bool", "default": False},
-    "sepia_strength":   {"type": "float","default": "100.0"}, # 0–100
+    "sepia_strength":   {"type": "float","default": "100.0"}, # 0-100
 
     # Global tint overlay
     "tint_color":     {"type": "str",   "default": ""},    # e.g. "#00FFAA" or "255,128,0,64"
-    "tint_strength":  {"type": "float", "default": "0.0"}, # 0–100 (% blend over)
+    "tint_strength":  {"type": "float", "default": "0.0"}, # 0-100 (% blend over)
 
     # Filters
     "gaussian_blur_radius": {"type": "float", "default": "0.0"},
@@ -1216,7 +1217,7 @@ def main_addon_function(
     # Remember original EXIF (if any) for optional preservation
     original_exif = img.info.get("exif", None)
 
-    # Auto-orient from EXIF (cheap and avoids “sideways” phone pics)
+    # Auto-orient from EXIF (cheap and avoids 'sideways' phone pics)
     if auto_orient_from_exif:
         try:
             img = ImageOps.exif_transpose(img)
@@ -1478,6 +1479,8 @@ def main_addon_function(
 
     img.save(out, format=fmt, **save_kwargs)
     return out.getvalue()
+
+
 
 ''',
 
